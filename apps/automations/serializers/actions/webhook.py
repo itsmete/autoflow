@@ -9,7 +9,7 @@ from django.core.validators import URLValidator
 class WebhookActionSerializer(BaseActionSerilaizer):
 
         def validate_config(self, value):
-                required = ['url','method']
+                required = ['url','method','payload','headers']
                 method = ['GET','POST','PUT','DELETE']
 
                 missing = [field for field in required if not value.get(field)]

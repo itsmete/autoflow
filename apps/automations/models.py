@@ -73,8 +73,12 @@ class AutomationStatus(models.TextChoices):
         SUCCESS = 'success' , 'Başarılı'
         FAILURE = 'failure' , 'Başarısız'
         PENDING = 'pending' , 'Bekliyor'
+        SKIPPED = 'skipped' , 'Atlandı'
 
 
+class LogicalOperator(models.TextChoices):
+    AND = 'and', 'Ve'
+    OR = 'or', 'Veya'
 
 
 
@@ -107,11 +111,18 @@ class AutomationTrigger(BaseModel):
 class AutomationCondition(BaseModel):
         automation = models.ForeignKey('Automation',on_delete=models.CASCADE)
 
-        # order_amount , customer_tyoe etc.
+        # order_amount , customer_type etc.
         field = models.CharField(max_length=100)
         value = models.CharField(max_length=255)
 
         operator = models.CharField(choices=ConditionOperators)
+
+        # logical operator is for comparing with the other condition objs
+        logical_operator = models.CharField(
+                choices=LogicalOperator.choices,
+                default=LogicalOperator.AND,
+                max_length=3
+        )
 
 
 
