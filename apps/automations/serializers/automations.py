@@ -12,13 +12,24 @@ from actions import get_action_serializer
 from triggers import get_trigger_serializer_class
 from rest_framework import serializers
 from django.utils.translation import gettext_lazy as _
-from ..models import AutomationCondition
+from ..models import Automation,AutomationCondition,\
+                AutomationAction,AutomationLog,AutomationTrigger
 
-class AutomationTriggerSerializer(serializers.Serializer):
+from tenants.serializers import TenantSerializer, BranchSerializer
+from tenants.models import Tenant ,Branch
+
+
+
+class AutomationTriggerSerializer(serializers.ModelSerializer):
+        
+        class Meta:
+                model = AutomationTrigger
+                fields = ['trigger_type','config','initial_data']
+
         
         def validate(self,data):
 
-                trigger_type = data.get('trigger_tpye')
+                trigger_type = data.get('trigger_type')
                 config = data.get('config')
 
                 serializer_cls = get_trigger_serializer_class(trigger_type)
@@ -33,20 +44,11 @@ class AutomationTriggerSerializer(serializers.Serializer):
 
 
 
-
-class AutomationConditionSerializer(serializers.ModelSerializer):
+class AutomationActionSerializer(serializers.ModelSerializer):
 
         class Meta:
-                model = AutomationCondition
-                fields= ['field','operator','value']
-        
-
-                
-
-
-
-
-class AutomationActionSerializer(serializers.Serializer):
+                model = AutomationAction
+                fields = ['action_type','order','on_failure','config']
 
         def validate(self,data):
 
@@ -68,3 +70,126 @@ class AutomationActionSerializer(serializers.Serializer):
 
 
                 return data
+        
+
+class AutomationConditionSerializer(serializers.ModelSerializer):
+
+        class Meta:
+                model = AutomationCondition
+                fields= ['field','operator','value','logical_operator']
+        
+class AutomationLogSerializer(serializers.ModelSerializer):
+        class Meta:
+                model = AutomationLog
+                fields = ['status','triggered_at','error_message','execution_context']
+
+
+
+
+
+class AutomationReadSerializer(serializers.ModelSerializer):
+        tenant = TenantSerializer(read_only = True)
+        branch = BranchSerializer(read_only = True)
+
+        triggers = AutomationTriggerSerializer(many=True,read_only = True)
+        conditions = AutomationConditionSerializer(many=True,read_only = True)
+        actions = AutomationActionSerializer(many=True,read_only = True)
+
+        logs = AutomationLogSerializer(many=True,read_only=True)
+
+
+        class Meta:
+                model = Automation
+                fields = ['name','allowed_roles','metadata','tenant','branch','triggers','conditions','actions','logs']
+
+
+
+                
+
+
+class AutomationWriteSerializer(serializers.ModelSerializer):
+
+        tenant = serializers.PrimaryKeyRelatedField(queryset = Tenant.objects.all())
+        branch = serializers.PrimaryKeyRelatedField(queryset = Branch.objects.all())
+
+        triggers = AutomationTriggerSerializer(many=True)
+        conditions = AutomationConditionSerializer(many=True)
+        actions = AutomationActionSerializer(many=True)
+
+
+
+        class Meta:
+                model = Automation
+                fields = ['name','allowed_roles','metadata','tenant','branch','triggers','conditions','actions']
+
+
+        def validate(self,data):
+                user = self.context.get('request').user
+
+                if user.is_super_admin:
+                        return data
+                
+                if (user.role not in data.get('allowed_roles')):
+                        raise serializers.ValidationError(_("You don't have a permission to do that"))
+
+                if(user.is_owner):
+                        if (data.get('tenant') is None): 
+                                raise serializers.ValidationError(_("You can't leave empty 'tenant' field for your role"))        
+
+                        if (data.get('tenant') != user.tenant ):
+                                raise serializers.ValidationError(_("You can't add automation to other tenants"))
+                        
+                        if (data.get('branch')):
+                                if data.get('branch') != user.branch:
+                                        raise serializers.ValidationError(_("You can't add automation to other branches"))
+
+
+                elif (user.is_branch_manager or user.is_staff):
+                        if (data.get('tenant') is None): 
+                                raise serializers.ValidationError(_("You can't leave empty 'tenant' field for your role"))        
+
+                        if (data.get('branch') is None): 
+                                raise serializers.ValidationError(_("You can't leave empty 'branch' field for your role"))        
+                        if (data.get('branch') != user.branch):
+                                raise serializers.ValidationError(_("You can't add automation to other branches"))
+
+
+
+                return data                                
+
+        def create(self, validated_data):
+
+                # user = self.context.get('request').user
+                
+                triggers = validated_data.pop('triggers')
+                conditions = validated_data.pop('conditions')
+                actions = validated_data.pop('actions')
+                
+                automation = Automation.objects.create(**validated_data)
+
+
+                
+                for t in triggers:
+                        AutomationTrigger.objects.create(automation= automation ,**t)
+                
+                for c in conditions:
+                        AutomationCondition.objects.create(automation= automation ,**c)
+
+                for a in actions:
+                        AutomationAction.objects.create(automation= automation ,**a)
+
+
+                # We can't use bulk_create since bulk_create optimizes the multiple creations in SQL wise, me
+                # Meaning that the python logic is skipped, also our overrided save() method 
+
+                # AutomationTrigger.objects.bulk_create(
+                #         [AutomationTrigger(automation = automation,**t) for t in triggers]
+                # )
+                # AutomationCondition.objects.bulk_create(
+                #         [AutomationCondition(automation = automation,**c) for c in conditions]
+                # )
+                # AutomationAction.objects.bulk_create(
+                #         [AutomationAction(automation = automation,**a)for a in actions]
+                # )
+                
+                return automation

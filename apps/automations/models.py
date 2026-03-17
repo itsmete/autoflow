@@ -88,12 +88,14 @@ class Automation(BaseModel):
         branch = models.ForeignKey('tenants.Branch',on_delete=models.SET_NULL,null=True,blank=True,related_name='automations')
         # cross-app references need app name as a prefix
 
+        allowed_roles = models.JSONField() # branch_manager , owner etc.
+
         metadata = models.JSONField()
 
 
 
 class AutomationTrigger(BaseModel):
-        automation = models.ForeignKey('Automation',on_delete=models.CASCADE)
+        automation = models.ForeignKey('Automation',on_delete=models.CASCADE,related_name='triggers')
         trigger_type = models.CharField(choices=TriggerType)
         config = models.JSONField()
 
@@ -109,7 +111,7 @@ class AutomationTrigger(BaseModel):
 
 
 class AutomationCondition(BaseModel):
-        automation = models.ForeignKey('Automation',on_delete=models.CASCADE)
+        automation = models.ForeignKey('Automation',on_delete=models.CASCADE,related_name='conditions')
 
         # order_amount , customer_type etc.
         field = models.CharField(max_length=100)
@@ -127,7 +129,7 @@ class AutomationCondition(BaseModel):
 
 
 class AutomationAction(BaseModel):
-        automation = models.ForeignKey('Automation',on_delete=models.CASCADE)
+        automation = models.ForeignKey('Automation',on_delete=models.CASCADE,related_name='actions')
         action_type = models.CharField(choices=ActionTypes)
 
         order = models.PositiveIntegerField()
@@ -139,7 +141,7 @@ class AutomationAction(BaseModel):
 
 
 class AutomationLog(BaseModel):
-        automation = models.ForeignKey('Automation',on_delete=models.CASCADE)   
+        automation = models.ForeignKey('Automation',on_delete=models.CASCADE,related_name='logs')   
         status = models.CharField(choices=AutomationStatus)
 
         triggered_at = models.DateTimeField(auto_now_add=True)
