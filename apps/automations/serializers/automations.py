@@ -18,7 +18,7 @@ from ..models import Automation,AutomationCondition,\
 from tenants.serializers import TenantSerializer, BranchSerializer
 from tenants.models import Tenant ,Branch
 
-
+from core.permissions import check_tenant_access
 
 class AutomationTriggerSerializer(serializers.ModelSerializer):
         
@@ -124,38 +124,28 @@ class AutomationWriteSerializer(serializers.ModelSerializer):
 
 
         def validate(self,data):
+
                 user = self.context.get('request').user
 
                 if user.is_super_admin:
                         return data
+
                 
-                if (user.role not in data.get('allowed_roles')):
+                if user.role not in data.get('allowed_roles'):
                         raise serializers.ValidationError(_("You don't have a permission to do that"))
 
-                if(user.is_owner):
-                        if (data.get('tenant') is None): 
-                                raise serializers.ValidationError(_("You can't leave empty 'tenant' field for your role"))        
+                
+                if not user.is_super_admin and not data.get('tenant'):
+                        raise serializers.ValidationError(_("Tenant field is required"))
 
-                        if (data.get('tenant') != user.tenant ):
-                                raise serializers.ValidationError(_("You can't add automation to other tenants"))
-                        
-                        if (data.get('branch')):
-                                if data.get('branch') != user.branch:
-                                        raise serializers.ValidationError(_("You can't add automation to other branches"))
+                if (user.is_branch_manager or user.is_staff) and not data.get('branch'):
+                        raise serializers.ValidationError(_("Branch field is required for your role"))
 
+                allowed, msg = check_tenant_access(user, data.get('tenant'), data.get('branch'))
+                if not allowed:
+                        raise serializers.ValidationError(msg)
 
-                elif (user.is_branch_manager or user.is_staff):
-                        if (data.get('tenant') is None): 
-                                raise serializers.ValidationError(_("You can't leave empty 'tenant' field for your role"))        
-
-                        if (data.get('branch') is None): 
-                                raise serializers.ValidationError(_("You can't leave empty 'branch' field for your role"))        
-                        if (data.get('branch') != user.branch):
-                                raise serializers.ValidationError(_("You can't add automation to other branches"))
-
-
-
-                return data                                
+                return data                            
 
         def create(self, validated_data):
 
@@ -192,4 +182,30 @@ class AutomationWriteSerializer(serializers.ModelSerializer):
                 #         [AutomationAction(automation = automation,**a)for a in actions]
                 # )
                 
+                return automation
+        
+        def update(self,instance,validated_data):
+
+                triggers = validated_data.pop('triggers')
+                conditions = validated_data.pop('conditions')
+                actions = validated_data.pop('actions')
+
+                automation = super().update(instance,validated_data)
+
+                automation.triggers.all().delete()
+                automation.conditions.all().delete()
+                automation.actions.all().delete()
+
+
+
+                for t in triggers:
+                        
+                        AutomationTrigger.objects.create(automation= automation ,**t)
+                
+                for c in conditions:
+                        AutomationCondition.objects.create(automation= automation ,**c)
+
+                for a in actions:
+                        AutomationAction.objects.create(automation= automation ,**a)
+
                 return automation
