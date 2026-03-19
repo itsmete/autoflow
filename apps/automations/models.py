@@ -47,6 +47,7 @@ class TriggerType(models.TextChoices):
         MANUAL = 'manual','Manuel',
         WEBHOOK = 'webhook','Webhook'
         EVENT = 'event','Olay Bazlı'
+        SIGNAL = 'signal', 'Sinyal'
 
 
 class ConditionOperators(models.TextChoices):

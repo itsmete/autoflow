@@ -6,3 +6,5 @@ class AutomationsConfig(AppConfig):
 
         def ready(self):
             import apps.automations.signals
+            from apps.automations.signals import register_existing_signal_triggers
+            register_existing_signal_triggers()
