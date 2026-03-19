@@ -6,5 +6,5 @@ class BaseTriggerSerializer(serializers.Serializer):
         
 
         @abstractmethod
-        def validate_config(self,data):
+        def validate_config(self,value):
                 pass
