@@ -46,7 +46,6 @@ class TriggerType(models.TextChoices):
         SCHEDULED = 'scheduled', 'Zamanlanmış'
         MANUAL = 'manual','Manuel',
         WEBHOOK = 'webhook','Webhook'
-        EVENT = 'event','Olay Bazlı'
         SIGNAL = 'signal', 'Sinyal'
 
 

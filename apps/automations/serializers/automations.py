@@ -8,15 +8,15 @@
         
 """
 
-from actions import get_action_serializer
-from triggers import get_trigger_serializer_class
+from .actions import get_action_serializer
+from .triggers import get_trigger_serializer_class
 from rest_framework import serializers
 from django.utils.translation import gettext_lazy as _
 from ..models import Automation,AutomationCondition,\
                 AutomationAction,AutomationLog,AutomationTrigger
 
-from tenants.serializers import TenantSerializer, BranchSerializer
-from tenants.models import Tenant ,Branch
+from apps.tenants.serializers import TenantSerializer, BranchSerializer
+from apps.tenants.models import Tenant ,Branch
 
 from core.permissions import check_tenant_access
 

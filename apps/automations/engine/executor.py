@@ -1,6 +1,6 @@
 from ..models import AutomationAction,AutomationLog,OnFailureChoices
 from .exceptions import ExecutionError
-from actions import get_action_class
+from .actions import get_action_class
 
 class AutomationExecutor:
 
