@@ -9,6 +9,7 @@ api_url -> provider endpoint
 
 from .base import BaseProvider
 from ..exceptions import ChannelError
+from .validators import validate_phone_number
 import requests
 
 """
@@ -41,7 +42,8 @@ class SMSProvider(BaseProvider):
                 },
                 "from_number" : {
                         "type" : "string",
-                        "required" : True,        
+                        "required" : True, 
+                        "validator" : validate_phone_number       
                 },
                 "body_template" : {
                         "type" : "dict",

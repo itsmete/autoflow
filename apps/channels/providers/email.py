@@ -3,6 +3,10 @@ from django.core.mail.backends.smtp import EmailBackend
 from django.core.mail.message import EmailMessage
 from ..exceptions import ChannelError
 from django.utils.translation import gettext_lazy as _
+
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError as DjangoValidationError
+
 import logging
 
 
@@ -48,6 +52,7 @@ class EmailProvider(BaseProvider):
                         "type" :"string",
                         "required": True,
                         "description" : "Email address or username",
+                        "validator" : validate_email
                 },
                 "password":{
                         "type" :"string",

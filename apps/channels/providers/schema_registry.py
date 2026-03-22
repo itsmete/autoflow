@@ -1,6 +1,6 @@
 
 
-FIELDS = ['type','description','required','default','choices']
+FIELDS = ['type','description','required','default','choices','fields','validator']
 
 
 TYPE_MAP = {
