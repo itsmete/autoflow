@@ -59,7 +59,8 @@ class ConditionOperators(models.TextChoices):
 
 class ActionTypes(models.TextChoices):
         EMAIL = 'email' ,'E-posta'
-        WHATSAPP = 'whataspp' , 'Whatsapp'
+        WHATSAPP = 'whatsapp' , 'Whatsapp'
+        INSTAGRAM = 'instagram' ,'Instagram'
         WEBHOOK = 'webhook' , 'Webhook'
         SMS = 'sms' ,'SMS'
 

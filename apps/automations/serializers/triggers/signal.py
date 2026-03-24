@@ -1,5 +1,5 @@
 # signal based triggers, 
-from .base import BaseTriggerSerializer
+from ..base import BaseConfigSerializer
 from ...engine.signal_registry import SIGNAL_EVENT_MAP
 from django.utils.translation import gettext_lazy as _
 from ..validators import validate_model_path
@@ -18,7 +18,7 @@ from ..validators import validate_model_path
 
 
 
-class SignalTriggerSerializer(BaseTriggerSerializer):
+class SignalTriggerSerializer(BaseConfigSerializer):
         CONFIG_SCHEMA = {
                 "model_name" : {
                         "type" : "string",

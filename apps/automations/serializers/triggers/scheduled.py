@@ -1,5 +1,5 @@
 from django.utils.translation import gettext_lazy as _
-from .base import BaseTriggerSerializer
+from ..base import BaseConfigSerializer
 from rest_framework import serializers
 from croniter import croniter
 """
@@ -26,7 +26,7 @@ REQUIRES_CRON = ('n' ,'forever')
 
 
 
-class ScheduledTriggerSerializer(BaseTriggerSerializer):
+class ScheduledTriggerSerializer(BaseConfigSerializer):
 
         CONFIG_SCHEMA = {
                 "schedule_type": {

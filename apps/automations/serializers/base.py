@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .. import get_field_type
+from . import get_field_type
 from django.utils.translation import gettext_lazy as _
 import logging
 
@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 
-class BaseTriggerSerializer(serializers.Serializer):
+class BaseConfigSerializer(serializers.Serializer):
         
         CONFIG_SCHEMA = {}
         
