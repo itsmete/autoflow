@@ -5,32 +5,12 @@ from django.utils.translation import gettext_lazy as _
 from django.shortcuts import get_object_or_404
 from .models import Automation,TriggerType,AutomationTrigger
 from rest_framework.exceptions import NotFound,PermissionDenied
-
+from core.mixins import RoleBasedAccessMixin
 from .serializers.automations import AutomationReadSerializer,\
         AutomationWriteSerializer
 
 
 
-class AutomationAccessMixin:
-
-        def get_automation(self,request,pk):
-                obj = get_object_or_404(Automation,id = pk)
-
-                allowed_roles = obj.allowed_roles
-
-                if not (request.user.role in allowed_roles):
-                        raise PermissionDenied(_("You don't have a permission to run this automation"))
-                
-                if  request.user.is_owner :
-                        if not (obj.tenant == request.user.tenant):
-                                raise PermissionDenied(_("You don't have a permission to run this automation"))
-        
-                if request.user.is_branch_manager  or request.user.is_staff:
-                        if not (obj.branch == request.user.branch):
-                                raise PermissionDenied(_("You don't have a permission to run this automation"))
-                
-                return obj
-        
 
 class WebhookAutomationView(APIView):
         permission_classes = []
@@ -48,14 +28,21 @@ class WebhookAutomationView(APIView):
                 )
 
 # automations/<uuid>/run 
-class ManualTriggeredAutomationView(APIView,AutomationAccessMixin):
+class ManualTriggeredAutomationView(RoleBasedAccessMixin,APIView):
+        model  = Automation
 
         def post(self,request,pk):
 
-                automation = self.get_automation(request,pk)
+                automation = self.get_object(request.user ,pk)
+                if request.user.role not in automation.allowed_roles:
+                        raise PermissionDenied(
+                                _("You are not permitted to perform this")
+                        )
+
+
 
                 try: 
-                        trigger = automation.automationtrigger_set.get(trigger_type = TriggerType.MANUAL )
+                        trigger = automation.triggers.get(trigger_type = TriggerType.MANUAL )
                 except AutomationTrigger.DoesNotExist :
                         raise NotFound(_("That object can't be manually triggered."))
 
@@ -72,31 +59,17 @@ class ManualTriggeredAutomationView(APIView,AutomationAccessMixin):
                 )
 
 # automations/   [GET, POST]
-class AutomationListCreateView(APIView):
+class AutomationListCreateView(RoleBasedAccessMixin,APIView):
         
-        def _get_qs(self,request):
-                user = request.user
-
-                qs = None 
-
-                if  user.is_super_admin:
-                        qs = Automation.objects.all()
-                elif user.is_owner:
-                        qs =Automation.objects.filter(
-                                tenant = user.tenant,
-                                allowed_roles__contains = [user.role] )
-                elif user.is_branch_manager or user.is_staff:
-                        qs = Automation.objects.filter(
-                                branch = user.branch,
-                                allowed_roles__contains = [user.role] 
-                        )
-
-                return qs
-
+        model  = Automation
 
         def get(self,request):
 
-                qs = self._get_qs(request)
+                qs = self.get_queryset(request.user).filter(
+                        allowed_roles__contains = [request.user.role]
+                )
+        
+
 
                 serializer = AutomationReadSerializer(qs,many=True)
 
@@ -125,10 +98,17 @@ class AutomationListCreateView(APIView):
 
 
 # automations/ [GET,PUT,DELETE]
-class AutomationDetailView(AutomationAccessMixin,APIView):
-        
+class AutomationDetailView(RoleBasedAccessMixin,APIView):
+        model  = Automation
+
+        def _check_allowed_roles(self, user, automation):
+                if user.role not in automation.allowed_roles:
+                        raise PermissionDenied(
+                                _("You are not permitted to perform this")
+                        )
         def get(self,request,pk):
-                automation = self.get_automation(request,pk)
+                automation = self.get_object(request.user ,pk)
+                self._check_allowed_roles(request.user , automation)
 
                 serializer = AutomationReadSerializer(automation)
 
@@ -139,7 +119,8 @@ class AutomationDetailView(AutomationAccessMixin,APIView):
 
 
         def put(self,request,pk):
-                automation = self.get_automation(request,pk)
+                automation = self.get_object(request.user ,pk)
+                self._check_allowed_roles(request.user , automation)
 
                 serializer = AutomationWriteSerializer(
                         instance = automation ,
@@ -158,7 +139,8 @@ class AutomationDetailView(AutomationAccessMixin,APIView):
 
 
         def delete(self,request,pk):
-                automation = self.get_automation(request,pk)
+                automation = self.get_object(request.user ,pk)
+                self._check_allowed_roles(request.user , automation)
 
                 automation.delete()
 
