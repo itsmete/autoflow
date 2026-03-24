@@ -132,6 +132,8 @@ class AutomationAction(BaseModel):
         automation = models.ForeignKey('Automation',on_delete=models.CASCADE,related_name='actions')
         action_type = models.CharField(choices=ActionTypes)
 
+        channel = models.ForeignKey('channels.Channel',null=True,blank=True,related_name='automation_actions',on_delete=models.SET_NULL)
+
         order = models.PositiveIntegerField()
 
         on_failure = models.CharField(choices=OnFailureChoices)
