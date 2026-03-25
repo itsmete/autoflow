@@ -3,12 +3,16 @@
 # and we assign a serializer for each of them.
 from .email import EmailActionSerializer
 from .webhook import WebhookActionSerializer
+from .whatsapp import WhatsappActionSerializer
+from .sms import SMSActionSerializer
+from .instagram import InstagramDMActionSerializer
 
 ACTION_SERIALIZERS =   {
         'email' : EmailActionSerializer,
-        # 'whatsapp' : WhatsappActionSerializer,
+        'whatsapp' : WhatsappActionSerializer,
         'webhook' : WebhookActionSerializer,
-        # 'sms'  : SMSActionSerializer
+        'sms'  : SMSActionSerializer,
+        'instagram' : InstagramDMActionSerializer
 }
 
 def get_action_serializer(action_type):

@@ -1,11 +1,13 @@
 from .scheduled import ScheduledTriggerSerializer
 from .webhook import WebhookTriggerSerializer
 from .manual import ManualTriggerSerializer
+from .signal import SignalTriggerSerializer
 
 TRIGGER_SERIALIZERS =  {
         'scheduled' : ScheduledTriggerSerializer, 
         'manual' : ManualTriggerSerializer,
-        'webhook' : WebhookTriggerSerializer
+        'webhook' : WebhookTriggerSerializer,
+        'signal' : SignalTriggerSerializer
 
 }
 
