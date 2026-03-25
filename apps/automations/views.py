@@ -3,12 +3,12 @@ from .authentication import TriggerSecretKeyAuthentication
 from .tasks import run_automation
 from django.utils.translation import gettext_lazy as _
 from django.shortcuts import get_object_or_404
-from .models import Automation,TriggerType,AutomationTrigger
+from .models import Automation,TriggerType,AutomationTrigger,Template
 from rest_framework.exceptions import NotFound,PermissionDenied
 from core.mixins import RoleBasedAccessMixin
 from .serializers.automations import AutomationReadSerializer,\
         AutomationWriteSerializer
-
+from .serializers.templates import TemplateReadSerializer,TemplateWriteSerializer
 
 
 
@@ -147,3 +147,83 @@ class AutomationDetailView(RoleBasedAccessMixin,APIView):
                 return Response(
                         status=status.HTTP_204_NO_CONTENT
                 )                
+
+# automations/templates/
+class TemplateListCreateView(RoleBasedAccessMixin,APIView):
+
+        model = Template
+        allowed_roles = ['super_admin','owner','branch_manager']
+
+        def get(self,request):
+                templates = self.get_queryset(request.user)
+
+                serializer = TemplateReadSerializer(templates , many=True)
+
+                return Response(
+                        data = serializer.data,
+                        status = status.HTTP_200_OK
+                )        
+
+
+        def post(self,request):
+                serializer = TemplateWriteSerializer(
+                        data = request.data,
+                        context = {'request': request}
+                )
+
+                serializer.is_valid(raise_exception=True)
+
+                obj = serializer.save()
+
+                return Response(
+                        data = TemplateReadSerializer(obj).data,
+                        status=status.HTTP_201_CREATED
+                )
+
+
+
+
+# automation/templates/<uuid:pk>/
+class TemplateDetailView(RoleBasedAccessMixin,APIView):
+
+        model = Template
+        allowed_roles = ['super_admin','owner','branch_manager']
+
+
+        def get(self,request,pk):
+                template = self.get_object(request.user,pk)
+
+                serializer = TemplateReadSerializer(template)
+
+                return Response(
+                        data = serializer.data,
+                        status = status.HTTP_200_OK
+                )
+
+        def put(self,request,pk):
+                instance = self.get_object(request.user,pk)
+
+                serializer = TemplateWriteSerializer(
+                        instance = instance,
+                        data = request.data,
+                        context = {'request' : request}
+                )
+
+                serializer.is_valid(raise_exception=True)
+
+                obj = serializer.save()
+
+                return Response(
+                        data = TemplateReadSerializer(obj).data,
+                        status=status.HTTP_200_OK
+                )
+        
+
+
+        def delete(self,request,pk):
+                
+                obj = self.get_object(request.user,pk)
+                
+               
+                obj.delete()
+                return Response(status =status.HTTP_204_NO_CONTENT)

@@ -14,3 +14,5 @@ class EvaluationError(EngineError):
         pass
 
 
+class TemplateRenderError(EngineError):
+        pass

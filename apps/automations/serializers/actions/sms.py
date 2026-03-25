@@ -1,5 +1,5 @@
 from ..base import BaseConfigSerializer
-from channels.providers.validators import validate_phone_number
+from apps.channels.providers.validators import validate_phone_number
 
 
 class SMSActionSerializer(BaseConfigSerializer):
