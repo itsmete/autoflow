@@ -4,8 +4,9 @@ import requests
 
 
 class SendWebhook(BaseAction):
+        requires_channel = False
         
-        def execute(self,config):
+        def _execute_without_channel(self,config):
                 method = config.get('method')
                 url = config.get('url')
                 headers = config.get('headers')
