@@ -1,9 +1,9 @@
-from .base import BaseTriggerSerializer
+from ..base import BaseConfigSerializer
 from core.roles import ROLE_WEIGHTS
 from rest_framework import serializers
 from django.utils.translation import gettext_lazy as _
 
-class ManualTriggerSerializer(BaseTriggerSerializer):
+class ManualTriggerSerializer(BaseConfigSerializer):
         """
                 {
                         "allowed_roles" : ["owner","branch_manager"] 

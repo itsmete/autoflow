@@ -1,10 +1,8 @@
 # signal based triggers, 
-from .base import BaseTriggerSerializer
-from ...engine.signal_registry import get_signal_for_event
-from rest_framework import serializers
+from ..base import BaseConfigSerializer
+from ...engine.signal_registry import SIGNAL_EVENT_MAP
 from django.utils.translation import gettext_lazy as _
-from django.apps import apps
-
+from ..validators import validate_model_path
 
 """
         When a model object is changed, automatipns must be triggered by a django signal
@@ -12,23 +10,28 @@ from django.apps import apps
         config :
                 model_name = app_label.model_name , users.User, tenants.Branch
 
-                type = post_save, post_delete, pre_save, pre_delete ,etc. 
+                signal_type = post_save, post_delete, pre_save, pre_delete ,etc. 
+
+                event_type = created,updated,deleted
                 
 """
 
 
 
-class SignalTriggerSerializer(BaseTriggerSerializer):
+class SignalTriggerSerializer(BaseConfigSerializer):
+        CONFIG_SCHEMA = {
+                "model_name" : {
+                        "type" : "string",
+                        "required" : True,
+                        "validator": validate_model_path,
+                        "error_message" : "Invalid model or path"
+                },
+                "event_type" : {
+                        "type" : "string",
+                        "required" : True,
+                        "choices" : list(SIGNAL_EVENT_MAP.keys()),
+                        
+                }
 
-        def validate_config(self, value):
-
-                if not get_signal_for_event(value.get('event_type')):
-                        raise serializers.ValidationError(_("Invalid signal event type."))
-                
-                try:
-                        apps.get_model(value.get('model_name'))
-                except LookupError as e:
-                        raise serializers.ValidationError(_("Invalid model name"))
-                
-
-                return value
+        }
+        
