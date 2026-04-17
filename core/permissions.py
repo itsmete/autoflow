@@ -69,7 +69,7 @@ class IsSuperAdminOrOwner(BasePermission):
 
 
 
-def check_tenant_access(user,tenant,branch=None):
+def check_tenant_access(user,tenant_id,branch_id=None):
         """
                 Returns (True, None) if access granted
                 Returns (False, "message") if access denied
@@ -79,17 +79,16 @@ def check_tenant_access(user,tenant,branch=None):
                 return (True,None)
 
         
-        if user.tenant != tenant:
+        if user.tenant.id != tenant_id:
                 return (False,_("You can't access another tenant"))
         
-        if branch and branch.tenant != tenant:
-                return (False,_("That branch doesn't belong to your tenant "))
+      
         
         if user.is_owner:
                 return (True,None)
         
         if user.is_branch_manager or user.is_staff:
-                if (user.branch != branch):
+                if (user.branch.id != branch_id):
                         return (False,_("You can't access that branch "))
 
                 return (True,None)

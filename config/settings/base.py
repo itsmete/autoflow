@@ -44,7 +44,7 @@ THIRD_PARTY_APPS = [
 
 #Modules that we wrote
 LOCAL_APPS = [
-        'core',
+        'core.apps.CoreConfig',
         'apps.tenants',
         'apps.channels',
         'apps.automations',
@@ -103,7 +103,7 @@ DATABASES = {
 }
 
 
-
+SCRIPTS_DIR = BASE_DIR / 'core' / 'cache' / 'scripts'
 
 REST_FRAMEWORK = {
 
@@ -197,6 +197,8 @@ TEMPLATES = [
         },
 ]
 
+
+REDIS_URL = env('REDIS_URL',default='redis://localhost:6379/0')
 
 
 # redis broker - task manager
