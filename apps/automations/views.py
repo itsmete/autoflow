@@ -62,19 +62,23 @@ class ManualTriggeredAutomationView(RoleBasedAccessMixin,APIView):
 class AutomationListCreateView(RoleBasedAccessMixin,APIView):
         
         model  = Automation
+        list_serializer = AutomationReadSerializer
 
         def get(self,request):
 
-                qs = self.get_queryset(request.user).filter(
+                serialized = self.get_queryset(request.user).filter(
                         allowed_roles__contains = [request.user.role]
                 )
         
 
-
-                serializer = AutomationReadSerializer(qs,many=True)
+                filtered = [
+                        item for item in serialized 
+                        if request.user.role in item['allowed_roles']
+                ]
+                
 
                 return Response(
-                        data = serializer.data,
+                        data = filtered,
                         status = status.HTTP_200_OK
                 )
         
@@ -100,20 +104,21 @@ class AutomationListCreateView(RoleBasedAccessMixin,APIView):
 # automations/ [GET,PUT,DELETE]
 class AutomationDetailView(RoleBasedAccessMixin,APIView):
         model  = Automation
+        detail_serializer = AutomationReadSerializer
 
         def _check_allowed_roles(self, user, automation):
-                if user.role not in automation.allowed_roles:
+                if user.role not in automation['allowed_roles']:
                         raise PermissionDenied(
                                 _("You are not permitted to perform this")
                         )
         def get(self,request,pk):
-                automation = self.get_object(request.user ,pk)
-                self._check_allowed_roles(request.user , automation)
+                serialized = self.get_object(request.user ,pk)
+                self._check_allowed_roles(request.user , serialized)
 
-                serializer = AutomationReadSerializer(automation)
+                
 
                 return Response(
-                        data = serializer.data,
+                        data = serialized,
                         status= status.HTTP_200_OK
                 )
 
@@ -152,15 +157,15 @@ class AutomationDetailView(RoleBasedAccessMixin,APIView):
 class TemplateListCreateView(RoleBasedAccessMixin,APIView):
 
         model = Template
-        allowed_roles = ['super_admin','owner','branch_manager']
-
+        allowed_roles_for_list = ['super_admin','owner','branch_manager'] 
+        
+        list_serializer = TemplateReadSerializer
+        
         def get(self,request):
-                templates = self.get_queryset(request.user)
-
-                serializer = TemplateReadSerializer(templates , many=True)
+                serialized = self.get_queryset(request.user)
 
                 return Response(
-                        data = serializer.data,
+                        data = serialized,
                         status = status.HTTP_200_OK
                 )        
 
@@ -188,15 +193,14 @@ class TemplateDetailView(RoleBasedAccessMixin,APIView):
 
         model = Template
         allowed_roles = ['super_admin','owner','branch_manager']
-
+        detail_serializer = TemplateReadSerializer
 
         def get(self,request,pk):
-                template = self.get_object(request.user,pk)
-
-                serializer = TemplateReadSerializer(template)
+                serialized = self.get_object(request.user,pk)
+                
 
                 return Response(
-                        data = serializer.data,
+                        data = serialized,
                         status = status.HTTP_200_OK
                 )
 

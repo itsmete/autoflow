@@ -34,6 +34,7 @@ class TenantListCreateView(APIView):
 class TenantDetailView(APIView):
         permission_classes = [IsSuperAdminOrOwner]
 
+        
         def get(self,request,pk):
                 obj = get_object_or_404(Tenant , id = pk)
                 serializer = TenantSerializer(obj)
