@@ -8,15 +8,16 @@ from .models import Tenant,Branch
 from django.utils.translation import gettext_lazy as _ 
 
 from rest_framework.exceptions import PermissionDenied,NotFound
-
+from core.mixins import RoleBasedAccessMixin
 
         
-class TenantListCreateView(APIView):
+class TenantListCreateView(RoleBasedAccessMixin, APIView):
+        model = Tenant
+        list_serializer = TenantSerializer
         permission_classes = [IsSuperAdmin]
 
         def get(self,request):
-                tenants = Tenant.objects.all()
-                data = TenantSerializer(tenants,many=True).data
+                data = self.get_cached_queryset(request.user)
 
                 return Response(data = data ,status=status.HTTP_200_OK)
         
@@ -31,20 +32,20 @@ class TenantListCreateView(APIView):
                 return Response(data=serializer.data,status=status.HTTP_201_CREATED)
                 
 
-class TenantDetailView(APIView):
+class TenantDetailView(RoleBasedAccessMixin, APIView):
+        model = Tenant
+        detail_serializer = TenantSerializer
         permission_classes = [IsSuperAdminOrOwner]
 
         
         def get(self,request,pk):
-                obj = get_object_or_404(Tenant , id = pk)
-                serializer = TenantSerializer(obj)
-
-                return Response(data=serializer.data,status=status.HTTP_200_OK)
+                data = self.get_cached_object(request.user, pk)
+                return Response(data=data, status=status.HTTP_200_OK)
         
 
         def put(self,request,pk):
 
-                instance = get_object_or_404(Tenant, id = pk)
+                instance = self.get_object(request.user, pk)
                 serializer = TenantSerializer(instance = instance , data =request.data)
 
                 serializer.is_valid(raise_exception=True)
@@ -54,7 +55,7 @@ class TenantDetailView(APIView):
                 return Response(data= serializer.data, status=status.HTTP_200_OK)
         
         def delete(self,request,pk):
-                obj = get_object_or_404(Tenant, id = pk)
+                obj = self.get_object(request.user, pk)
 
                 obj.delete()
 
@@ -69,8 +70,9 @@ class TenantDetailView(APIView):
 
 """
 
-class BranchListView(APIView):
-
+class BranchListView(RoleBasedAccessMixin, APIView):
+        model = Branch
+        list_serializer = BranchSerializer
         permission_classes = [IsAuthenticated]
 
         def _get_queryset(self,request):
@@ -84,14 +86,8 @@ class BranchListView(APIView):
                         return Branch.objects.filter(id = user.branch.id)
         
         def get(self,request):
-                qs = self._get_queryset(request)
-                
-                        
-                # serializer = BranchSerializer(data = qs , many = True)
-                """ 'data=' argument is for the data coming outside (request) , In querysets, It is not used"""
-                serializer = BranchSerializer(qs , many = True)
-
-                return Response(data=serializer.data,status=status.HTTP_200_OK)
+                data = self.get_cached_queryset(request.user)
+                return Response(data=data, status=status.HTTP_200_OK)
 
 
         #Creation of branch
@@ -112,8 +108,9 @@ class BranchListView(APIView):
 
 
 
-class BranchDetailView(APIView):
-
+class BranchDetailView(RoleBasedAccessMixin, APIView):
+        model = Branch
+        detail_serializer = BranchSerializer
         permission_classes = [IsAuthenticated]
 
         def _get_obj(self,request,pk):
@@ -147,14 +144,14 @@ class BranchDetailView(APIView):
 
 
         def get(self,request,pk):
-                obj = self._get_obj(request,pk)
-                serializer = BranchSerializer(obj)
-
-                return Response(data = serializer.data, status=status.HTTP_200_OK)
+                self._get_obj(request, pk) # Still do manual checks since get_cached_object permission check might not cover complex branch rules
+                data = self.get_cached_object(request.user, pk)
+                return Response(data = data, status=status.HTTP_200_OK)
 
 
         def put(self,request,pk):
-                instance = self._get_obj(request,pk)
+                instance = self.get_object(request.user, pk)
+                self._get_obj(request, pk) # Check permission
                 serializer = BranchSerializer(instance = instance , data = request.data)
                 serializer.is_valid(raise_exception=True)
                 serializer.save()
@@ -167,7 +164,8 @@ class BranchDetailView(APIView):
                 if (request.user.is_branch_manager):
                         return Response(data = {'detail':_('Branch managers can not delete branchs')},status=status.HTTP_403_FORBIDDEN)
         
-                obj = self._get_obj(request,pk)
+                obj = self.get_object(request.user, pk)
+                self._get_obj(request, pk) # Check permission
                 obj.delete()
 
                 return Response(status=status.HTTP_204_NO_CONTENT)

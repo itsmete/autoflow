@@ -31,15 +31,16 @@ class RoleBasedAccessMixin:
         def get_qs_db(self,user):
                 if user.is_super_admin:
                         qs =  self.model.objects.all()
-                
                 elif user.is_owner:
-                        qs =  self.model.objects.filter(
-                                tenant = user.tenant
-                        )
+                        if self.model.__name__ == 'Tenant':
+                                qs = self.model.objects.filter(id=user.tenant_id)
+                        else:
+                                qs = self.model.objects.filter(tenant=user.tenant)
                 elif user.is_branch_manager or user.is_staff:
-                        qs =  self.model.objects.filter(
-                                branch = user.branch
-                        )
+                        if self.model.__name__ == 'Branch':
+                                qs = self.model.objects.filter(id=user.branch_id)
+                        else:
+                                qs = self.model.objects.filter(branch=user.branch)
 
                 data = self.list_serializer(qs,many=True).data
                 json_data = json.dumps(list(data),cls = JSONEncoder)
@@ -56,7 +57,10 @@ class RoleBasedAccessMixin:
                 data = self.detail_serializer(obj).data
                 json_data = json.dumps(data,cls = JSONEncoder)
 
-                idxs = resolve_idx_keys(self.model.__name__,obj.tenant_id,obj.branch_id)
+                t_id = getattr(obj, 'tenant_id', obj.id if self.model.__name__ == 'Tenant' else None)
+                b_id = getattr(obj, 'branch_id', obj.id if self.model.__name__ == 'Branch' else None)
+
+                idxs = resolve_idx_keys(self.model.__name__, t_id, b_id)
                 
                 single_cache.delay(self.model.__name__,key,json_data,idxs)
                 
