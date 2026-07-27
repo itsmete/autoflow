@@ -1,6 +1,6 @@
 from celery import shared_task
-from cache import check_it_cacheable,get_ttl,resolve_idx_keys,get_cache_key
-import cache.service as cache_module
+from .cache import check_it_cacheable,get_ttl,resolve_idx_keys,get_cache_key
+from .cache import service as cache_module
 import json
 
 @shared_task

@@ -22,7 +22,7 @@ class RoleBasedAccessMixin:
         list_serializer = None
         
 
-        def check_permissions(self,user):
+        def check_role_access(self,user):
                 if self.allowed_roles_for_list and user.role not in self.allowed_roles_for_list:
                         raise PermissionDenied(
                                 _("You are not permitted to perform this operation")
@@ -71,7 +71,7 @@ class RoleBasedAccessMixin:
 
         def get_cached_queryset(self,user):
                 model_name = self.model.__name__
-                self.check_permissions(user)
+                self.check_role_access(user)
 
                 if not check_it_cacheable(model_name):
                         return json.loads(self.get_qs_db(user))
@@ -100,7 +100,7 @@ class RoleBasedAccessMixin:
         
         
         def get_cached_object(self,user,pk):
-                self.check_permissions(user)
+                self.check_role_access(user)
                 
                 cache_key = f"{get_cache_key(self.model.__name__)}{pk}"
 
@@ -113,7 +113,11 @@ class RoleBasedAccessMixin:
                 obj_dict = json.loads(obj)
                 tenant_id = obj_dict.get('tenant')
                 branch_id = obj_dict.get('branch')
-                
+
+                if self.model.__name__ == 'Tenant':
+                        tenant_id = obj_dict.get('id')
+                elif self.model.__name__ == 'Branch':
+                        branch_id = obj_dict.get('id')
 
                 # !!!!!!!!!! -> JSON serialized obj is not have properties. Will be handled. WIP.
                 allowed , msg = check_tenant_access(user ,tenant_id,branch_id)
@@ -128,7 +132,7 @@ class RoleBasedAccessMixin:
                         
                 
         def get_object(self, user, pk):
-                self.check_permissions(user)
+                self.check_role_access(user)
                 obj = get_object_or_404(self.model, id=pk)
                 
                 tenant_id = obj.tenant_id if hasattr(obj, 'tenant_id') else None

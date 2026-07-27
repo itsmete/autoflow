@@ -79,7 +79,7 @@ def check_tenant_access(user,tenant_id,branch_id=None):
                 return (True,None)
 
         
-        if user.tenant.id != tenant_id:
+        if str(user.tenant.id) != str(tenant_id):
                 return (False,_("You can't access another tenant"))
         
       
@@ -88,7 +88,7 @@ def check_tenant_access(user,tenant_id,branch_id=None):
                 return (True,None)
         
         if user.is_branch_manager or user.is_staff:
-                if (user.branch.id != branch_id):
+                if (str(user.branch.id) != str(branch_id)):
                         return (False,_("You can't access that branch "))
 
                 return (True,None)

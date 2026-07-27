@@ -121,12 +121,10 @@ class BranchDetailView(RoleBasedAccessMixin, APIView):
                         return obj
 
                 if (user.is_owner):
-                        if (user.tenant == obj.get_tenant()):
+                        tenant_obj = getattr(obj, 'tenant', None)
+                        if tenant_obj and user.tenant == tenant_obj:
                                 return obj
                         else:
-                                # return Response(status=status.HTTP_403_FORBIDDEN)
-                                #helper methods SHOULDN'T RESPONSE  , because it returns to main function and 
-                                # it is hard to manage , instead , throw exception
                                 raise PermissionDenied()
 
                         

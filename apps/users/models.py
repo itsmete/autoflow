@@ -99,5 +99,9 @@ class User(AbstractBaseUser,PermissionsMixin,BaseModel):
         def is_super_admin(self):
                 return self.role == self.Role.SUPER_ADMIN
 
+        @property
+        def is_branch_manager(self):
+                return self.role == self.Role.BRANCH_MANAGER
+
         class Meta:
                 db_table = 'users'

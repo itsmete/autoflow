@@ -93,7 +93,7 @@ DATABASES = {
                 'POST' : env('DB_PORT', parse_default='5432'),
                 'OPTIONS' : {
                         # If db connection is down, reverse transaction
-                        'connection_timeout' : 10,
+                        'connect_timeout' : 10,
                 },
 
                 'CONN_MAX_AGE' : 60,
