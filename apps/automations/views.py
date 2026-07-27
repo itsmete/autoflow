@@ -66,17 +66,13 @@ class AutomationListCreateView(RoleBasedAccessMixin,APIView):
 
         def get(self,request):
 
-                serialized = self.get_queryset(request.user).filter(
-                        allowed_roles__contains = [request.user.role]
-                )
+                serialized = self.get_cached_queryset(request.user)
         
-
                 filtered = [
                         item for item in serialized 
-                        if request.user.role in item['allowed_roles']
+                        if request.user.role in item.get('allowed_roles', [])
                 ]
                 
-
                 return Response(
                         data = filtered,
                         status = status.HTTP_200_OK
@@ -107,12 +103,13 @@ class AutomationDetailView(RoleBasedAccessMixin,APIView):
         detail_serializer = AutomationReadSerializer
 
         def _check_allowed_roles(self, user, automation):
-                if user.role not in automation['allowed_roles']:
+                roles = automation.get('allowed_roles', []) if isinstance(automation, dict) else getattr(automation, 'allowed_roles', [])
+                if user.role not in roles:
                         raise PermissionDenied(
                                 _("You are not permitted to perform this")
                         )
         def get(self,request,pk):
-                serialized = self.get_object(request.user ,pk)
+                serialized = self.get_cached_object(request.user ,pk)
                 self._check_allowed_roles(request.user , serialized)
 
                 
@@ -162,7 +159,7 @@ class TemplateListCreateView(RoleBasedAccessMixin,APIView):
         list_serializer = TemplateReadSerializer
         
         def get(self,request):
-                serialized = self.get_queryset(request.user)
+                serialized = self.get_cached_queryset(request.user)
 
                 return Response(
                         data = serialized,
@@ -196,7 +193,7 @@ class TemplateDetailView(RoleBasedAccessMixin,APIView):
         detail_serializer = TemplateReadSerializer
 
         def get(self,request,pk):
-                serialized = self.get_object(request.user,pk)
+                serialized = self.get_cached_object(request.user,pk)
                 
 
                 return Response(

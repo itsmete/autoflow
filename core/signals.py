@@ -25,11 +25,12 @@ def handle_pre_save_invalidation(sender,instance,**kwargs):
 
         parent_info = get_parent_info(sender.__name__)
         if parent_info:
-                parent_model_name, fk_field = parent_info
+                parent_model_path, fk_field = parent_info
+                app_name, parent_model_name = parent_model_path.split('.')
                 parent_pk = getattr(instance, fk_field)
                 
-                parent = apps.get_model('core',parent_model_name).objects.get(id=parent_pk)
-                invalidate_instance_cache(parent,parent_model_name)
+                parent = apps.get_model(app_name, parent_model_name).objects.get(id=parent_pk)
+                invalidate_instance_cache(parent, parent_model_name)
                 return
         
         if not check_it_cacheable(sender.__name__):
@@ -48,11 +49,12 @@ def handle_post_delete_invalidation(sender,instance,**kwargs):
 
         parent_info = get_parent_info(sender.__name__)
         if parent_info:
-                parent_model_name, fk_field = parent_info
+                parent_model_path, fk_field = parent_info
+                app_name, parent_model_name = parent_model_path.split('.')
                 parent_pk = getattr(instance, fk_field)
                 
-                parent = apps.get_model('core',parent_model_name).objects.get(id=parent_pk)
-                invalidate_instance_cache(parent,parent_model_name)
+                parent = apps.get_model(app_name, parent_model_name).objects.get(id=parent_pk)
+                invalidate_instance_cache(parent, parent_model_name)
                 return
         
         if not check_it_cacheable(sender.__name__):

@@ -52,19 +52,19 @@ REGISTRY = {
                 },
                 'AutomationTrigger': {
                         'CACHED': False,
-                        'parent': ('Automation', 'automation_id'),
+                        'parent': ('automations.Automation', 'automation_id'),
                 },
                 'AutomationCondition': {
                         'CACHED': False,
-                        'parent': ('Automation', 'automation_id'),
+                        'parent': ('automations.Automation', 'automation_id'),
                 },
                 'AutomationAction': {
                         'CACHED': False,
-                        'parent': ('Automation', 'automation_id'),
+                        'parent': ('automations.Automation', 'automation_id'),
                 },
                 'AutomationLog': {
                         'CACHED': False,
-                        'parent': ('Automation', 'automation_id'),
+                        'parent': ('automations.Automation', 'automation_id'),
 
                 } 
         }

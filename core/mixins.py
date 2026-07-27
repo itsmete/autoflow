@@ -65,7 +65,7 @@ class RoleBasedAccessMixin:
 
 
 
-        def get_queryset(self,user):
+        def get_cached_queryset(self,user):
                 model_name = self.model.__name__
                 self.check_permissions(user)
 
@@ -95,7 +95,7 @@ class RoleBasedAccessMixin:
                 
         
         
-        def get_object(self,user,pk):
+        def get_cached_object(self,user,pk):
                 self.check_permissions(user)
                 
                 cache_key = f"{get_cache_key(self.model.__name__)}{pk}"
@@ -118,11 +118,20 @@ class RoleBasedAccessMixin:
                 if not allowed:
                         raise PermissionDenied(
                                 _(msg)
-                
-                
                         )
 
                 return obj_dict
                         
                 
-
+        def get_object(self, user, pk):
+                self.check_permissions(user)
+                obj = get_object_or_404(self.model, id=pk)
+                
+                tenant_id = obj.tenant_id if hasattr(obj, 'tenant_id') else None
+                branch_id = obj.branch_id if hasattr(obj, 'branch_id') else None
+                
+                allowed, msg = check_tenant_access(user, tenant_id, branch_id)
+                if not allowed:
+                        raise PermissionDenied(_(msg))
+                        
+                return obj
