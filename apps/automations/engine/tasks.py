@@ -1,1 +1,0 @@
-# for celery tasks

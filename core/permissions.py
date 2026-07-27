@@ -1,5 +1,5 @@
 from rest_framework.permissions import BasePermission
-
+from django.utils.translation import gettext_lazy as _
 
 # class ExtendedPermission(BasePermission):
 
@@ -67,3 +67,32 @@ class IsSuperAdminOrOwner(BasePermission):
         def has_permission(self, request, view):
                 return request.user.is_authenticated and (request.user.is_super_admin or request.user.is_owner)
 
+
+
+def check_tenant_access(user,tenant,branch=None):
+        """
+                Returns (True, None) if access granted
+                Returns (False, "message") if access denied
+        """
+
+        if user.is_super_admin:
+                return (True,None)
+
+        
+        if user.tenant != tenant:
+                return (False,_("You can't access another tenant"))
+        
+        if branch and branch.tenant != tenant:
+                return (False,_("That branch doesn't belong to your tenant "))
+        
+        if user.is_owner:
+                return (True,None)
+        
+        if user.is_branch_manager or user.is_staff:
+                if (user.branch != branch):
+                        return (False,_("You can't access that branch "))
+
+                return (True,None)
+                
+                
+        return (False,_("Access Denied"))

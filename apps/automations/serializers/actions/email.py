@@ -1,28 +1,26 @@
-from rest_framework import serializers
-from .base import BaseActionSerilaizer
+from ..base import BaseConfigSerializer
 from django.utils.translation import gettext_lazy as _
+from ..validators import validate_email_wrapped
 
-from django.core.validators import validate_email
-from django.core.exceptions import ValidationError as DjangoValidationError
+class EmailActionSerializer(BaseConfigSerializer):
 
-class EmailActionSerializer(BaseActionSerilaizer):
+        CONFIG_SCHEMA = {
+                "to" : {
+                        "type" : "string",
+                        "required" : False,
+                        "required_at_runtime" : True , # FOR trigger to action data flow , not for pre-defined config
+                        "validator" : validate_email_wrapped,
+                        "error_message" : "Invalid email format" 
+                },
+                "subject" : {
+                        "type" : "string",
+                        "required" : False,
+                        "required_at_runtime" : True ,
+                },
+                "body" : {
+                        "type" : "string",
+                        "required" : False,
+                        "required_at_runtime" : True ,
+                }
+        }
 
-        def validate_config(self,value):
-                required = ['to','subject','body']
-
-
-                missing = [field for field in required if not value.get(field)]
-
-                if missing:
-                        raise serializers.ValidationError(
-                                _(f'Missing fields : {",".join(missing)}')
-                        )
-                
-                email = value.get('to')
-
-                try : 
-                        validate_email(email)
-                except DjangoValidationError:
-                        raise serializers.ValidationError(_("Invalid email format"))
-
-                return value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              

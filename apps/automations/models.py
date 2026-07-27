@@ -46,7 +46,7 @@ class TriggerType(models.TextChoices):
         SCHEDULED = 'scheduled', 'Zamanlanmış'
         MANUAL = 'manual','Manuel',
         WEBHOOK = 'webhook','Webhook'
-        EVENT = 'event','Olay Bazlı'
+        SIGNAL = 'signal', 'Sinyal'
 
 
 class ConditionOperators(models.TextChoices):
@@ -59,7 +59,8 @@ class ConditionOperators(models.TextChoices):
 
 class ActionTypes(models.TextChoices):
         EMAIL = 'email' ,'E-posta'
-        WHATSAPP = 'whataspp' , 'Whatsapp'
+        WHATSAPP = 'whatsapp' , 'Whatsapp'
+        INSTAGRAM = 'instagram' ,'Instagram'
         WEBHOOK = 'webhook' , 'Webhook'
         SMS = 'sms' ,'SMS'
 
@@ -73,8 +74,12 @@ class AutomationStatus(models.TextChoices):
         SUCCESS = 'success' , 'Başarılı'
         FAILURE = 'failure' , 'Başarısız'
         PENDING = 'pending' , 'Bekliyor'
+        SKIPPED = 'skipped' , 'Atlandı'
 
 
+class LogicalOperator(models.TextChoices):
+    AND = 'and', 'Ve'
+    OR = 'or', 'Veya'
 
 
 
@@ -84,12 +89,14 @@ class Automation(BaseModel):
         branch = models.ForeignKey('tenants.Branch',on_delete=models.SET_NULL,null=True,blank=True,related_name='automations')
         # cross-app references need app name as a prefix
 
+        allowed_roles = models.JSONField() # branch_manager , owner etc.
+
         metadata = models.JSONField()
 
 
 
 class AutomationTrigger(BaseModel):
-        automation = models.ForeignKey('Automation',on_delete=models.CASCADE)
+        automation = models.ForeignKey('Automation',on_delete=models.CASCADE,related_name='triggers')
         trigger_type = models.CharField(choices=TriggerType)
         config = models.JSONField()
 
@@ -105,19 +112,28 @@ class AutomationTrigger(BaseModel):
 
 
 class AutomationCondition(BaseModel):
-        automation = models.ForeignKey('Automation',on_delete=models.CASCADE)
+        automation = models.ForeignKey('Automation',on_delete=models.CASCADE,related_name='conditions')
 
-        # order_amount , customer_tyoe etc.
+        # order_amount , customer_type etc.
         field = models.CharField(max_length=100)
         value = models.CharField(max_length=255)
 
         operator = models.CharField(choices=ConditionOperators)
 
+        # logical operator is for comparing with the other condition objs
+        logical_operator = models.CharField(
+                choices=LogicalOperator.choices,
+                default=LogicalOperator.AND,
+                max_length=3
+        )
+
 
 
 class AutomationAction(BaseModel):
-        automation = models.ForeignKey('Automation',on_delete=models.CASCADE)
+        automation = models.ForeignKey('Automation',on_delete=models.CASCADE,related_name='actions')
         action_type = models.CharField(choices=ActionTypes)
+
+        channel = models.ForeignKey('channels.Channel',null=True,blank=True,related_name='automation_actions',on_delete=models.SET_NULL)
 
         order = models.PositiveIntegerField()
 
@@ -128,7 +144,7 @@ class AutomationAction(BaseModel):
 
 
 class AutomationLog(BaseModel):
-        automation = models.ForeignKey('Automation',on_delete=models.CASCADE)   
+        automation = models.ForeignKey('Automation',on_delete=models.CASCADE,related_name='logs')   
         status = models.CharField(choices=AutomationStatus)
 
         triggered_at = models.DateTimeField(auto_now_add=True)

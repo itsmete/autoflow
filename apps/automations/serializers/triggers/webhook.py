@@ -1,4 +1,4 @@
-from .base import BaseTriggerSerializer
+from ..base import BaseConfigSerializer
 
 """
 InboundWebookTriggerSerializer
@@ -14,7 +14,7 @@ We're gonna use Custom middlewares ,
 since serializers are not supposed to ask "if the request is authorized or not".
 we will handle it via WebhookAuthMiddleware
 """
-class WebhookTriggerSerializer(BaseTriggerSerializer):
+class WebhookTriggerSerializer(BaseConfigSerializer):
 
         def validate_config(self,value):
                 return value
