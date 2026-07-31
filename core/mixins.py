@@ -12,6 +12,22 @@ import json
 from .tasks import single_cache,bulk_cache
 
 
+def _nested_id(value):
+        """
+        Pull an id out of a serialized relation.
+
+        Read serializers nest their relations (AutomationReadSerializer renders
+        `tenant` as a whole TenantSerializer payload), so the cached dict holds
+        {'id': ..., 'name': ...} where the permission check expects an id. Comparing
+        the dict itself always failed, and every detail read of an automation or a
+        template came back 403 for the very owner it belonged to.
+        """
+        if isinstance(value,dict):
+                return value.get('id')
+
+        return value
+
+
 class RoleBasedAccessMixin:
         """
         Role-scoped access plus the read-through cache for list and detail endpoints.
@@ -158,8 +174,8 @@ class RoleBasedAccessMixin:
 
                 # The serialized payload has no model properties, so the scope has to
                 # be read out of the dict. Mirrors BaseModel.get_scope_ids().
-                tenant_id = obj_dict.get('tenant')
-                branch_id = obj_dict.get('branch')
+                tenant_id = _nested_id(obj_dict.get('tenant'))
+                branch_id = _nested_id(obj_dict.get('branch'))
 
                 if model_name == 'Tenant':
                         tenant_id = obj_dict.get('id')

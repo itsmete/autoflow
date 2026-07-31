@@ -3,5 +3,5 @@ from apps.channels.providers import InstagramProvider
 
 class SendInstagramDM(BaseAction):
 
-        provider_class = InstagramProvider()
+        provider_class = InstagramProvider
         requires_channel = True                

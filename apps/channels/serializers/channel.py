@@ -13,8 +13,10 @@ class ChannelReadSerializer(serializers.ModelSerializer):
         class Meta:
                 model = Channel
                 fields = ['id','name','branch','tenant','channel_type','credentials','created_at','updated_at']
-                
-                read_only_fields = '__all__'
+
+                # DRF requires a list/tuple here; the string '__all__' raises
+                # "The `read_only_fields` option must be a list or tuple."
+                read_only_fields = fields
 
 class ChannelWriteSerializer(serializers.ModelSerializer):
         tenant = serializers.PrimaryKeyRelatedField(queryset = Tenant.objects.all())

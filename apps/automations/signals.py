@@ -46,7 +46,13 @@ def register_existing_signal_triggers(data : AutomationTrigger = None):
 def create_or_update_periodic_task_after_trigger_object_changed(sender,instance,created,**kwargs):
         
         if instance.trigger_type == TriggerType.SCHEDULED:
-                cron_exp  = instance.config['cron_expression'] 
+                # A 'one_time' schedule is driven by start_time and carries no cron
+                # expression, so subscripting the config raised KeyError and took the
+                # whole save down with it.
+                cron_exp = instance.config.get('cron_expression')
+                if not cron_exp:
+                        return
+
                 crons = cron_exp.split() #minute , hour, day_of_week , day_of_month , month_of_year
 
                 schedule, _  = CrontabSchedule.objects.get_or_create(

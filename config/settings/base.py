@@ -112,9 +112,13 @@ REST_FRAMEWORK = {
                 # reads from "Authorization : Bearer <token>" 
                 'rest_framework_simplejwt.authentication.JWTAuthentication',
         ],
-        'DEFAULT_PERMISSON_CLASSES' : [
+        # SECURITY: this key was spelled DEFAULT_PERMISSON_CLASSES (missing an I).
+        # DRF ignores unknown keys, so the default silently stayed AllowAny and every
+        # view without its own permission_classes - the whole automations app among
+        # them - was reachable anonymously.
+        'DEFAULT_PERMISSION_CLASSES' : [
                 # Any user is not signed in cannot reach any endpoint defaultly
-                # Wİll be overridded for Public endpoints 
+                # Wİll be overridded for Public endpoints
                 'rest_framework.permissions.IsAuthenticated',
         ],
         'DEFAULT_FILTER_BACKENDS' : [
@@ -171,7 +175,9 @@ LOCALE_PATHS = [BASE_DIR / 'locale']
 
 
 
-SPECTATULAR_SETTINGS = {
+# Was SPECTATULAR_SETTINGS; drf-spectacular never read it, so the API docs carried
+# drf-spectacular's defaults instead of any of the values below.
+SPECTACULAR_SETTINGS = {
         'TITLE' : 'AutoFlow API',
         'DESCRIPTION' : 'Automation Control panel REST API',
         'VERSION' : '1.0.0',

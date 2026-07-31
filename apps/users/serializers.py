@@ -43,6 +43,12 @@ class UserRegisterSerializer(serializers.ModelSerializer):
         def validate_branch(self,value):
                 request = self.context.get('request')
 
+                # A super admin belongs to no tenant, so comparing branch.tenant
+                # against their (null) tenant rejected every branch and left them
+                # unable to register anyone into one.
+                if request.user.is_super_admin:
+                        return value
+
                 if value and value.tenant != request.user.tenant:
                         raise serializers.ValidationError(
                                 _('That branch is not yours')
@@ -55,7 +61,10 @@ class UserRegisterSerializer(serializers.ModelSerializer):
         def create(self, validated_data):
                 request = self.context.get('request')
 
-                validated_data['tenant'] = request.user.tenant
+                # Same reason: fall back to the branch's tenant when the creator has
+                # none of their own, otherwise a super admin creates orphaned users.
+                branch = validated_data.get('branch')
+                validated_data['tenant'] = request.user.tenant or (branch.tenant if branch else None)
 
 
                 #if super_admin : True else false

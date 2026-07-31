@@ -4,6 +4,8 @@ from .actions import get_action_class
 
 class AutomationExecutor:
 
+        MAX_RETRIES = 3
+
         def _execute_single(self,action : AutomationAction,data):
                 
                 
@@ -20,31 +22,39 @@ class AutomationExecutor:
                 
                 for action in actions:
                         try:
-                                status = self._execute_single(action,data)
-                        except ExecutionError as e:
+                                self._execute_single(action,data)
+                        except ExecutionError:
                                 if action.on_failure == OnFailureChoices.RETRY:
-                                        max_retries = 3
-                                        i = 0
-                                        status_retry = False
-                                        while (i < 3):
-                                                try:
-                                                        status_retry = self._execute_single(action,data)
-                                                        if status_retry:
-                                                                break
-                                                
-                                                except ExecutionError as e:
-                                                        i+=1
-                                        if not status_retry:
-                                                raise ExecutionError(f"An action ({action.id}) failed on all {max_retries} attempts")       
+                                        self._retry(action,data)
 
                                 elif action.on_failure == OnFailureChoices.STOP:
                                         return False
-                                
+
                                 elif action.on_failure == OnFailureChoices.CONTINUE:
                                         pass
 
-                        
+
                 return True
+
+
+        def _retry(self,action,data):
+                """
+                Re-run a failed action up to MAX_RETRIES times.
+
+                The counter has to advance on EVERY attempt, not only on the ones that
+                raise. The original loop only incremented inside `except`, so an action
+                that returned falsy without raising spun forever and hung the worker.
+                """
+                for _attempt in range(self.MAX_RETRIES):
+                        try:
+                                if self._execute_single(action,data):
+                                        return True
+                        except ExecutionError:
+                                continue
+
+                raise ExecutionError(
+                        f"An action ({action.id}) failed on all {self.MAX_RETRIES} attempts"
+                )
         
 
 

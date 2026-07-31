@@ -44,7 +44,11 @@ class TemplateManager():
 
 
                         if value is not None:
-                                resolved['field_name'] = value
+                                # This was resolved['field_name'] - a literal string key.
+                                # Every field collapsed into one entry called
+                                # "field_name", so fill() never matched a real
+                                # {{placeholder}} and rendered templates came out raw.
+                                resolved[field_name] = value
                 return resolved
 
 

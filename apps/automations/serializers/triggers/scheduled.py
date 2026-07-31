@@ -1,7 +1,7 @@
 from django.utils.translation import gettext_lazy as _
 from ..base import BaseConfigSerializer
 from rest_framework import serializers
-from croniter import croniter
+from ..validators import validate_cron_expression
 """
 Type.ScheduledTriggerSerializer
         .config {
@@ -45,7 +45,7 @@ class ScheduledTriggerSerializer(BaseConfigSerializer):
                 "cron_expression": {
                         "type": "string",
                         "required": False,
-                        "validator": croniter.is_valid,
+                        "validator": validate_cron_expression,
                         "error_message" : "Invalid cron expression"
                 }
         }

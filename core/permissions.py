@@ -69,26 +69,48 @@ class IsSuperAdminOrOwner(BasePermission):
 
 
 
+def _as_id(value):
+        """
+        Normalise a scope argument to a comparable string.
+
+        Callers reach this function from three directions and each passes something
+        different: the mixin passes a UUID, the cached path passes a string out of
+        JSON, and serializers pass a whole model instance because
+        PrimaryKeyRelatedField resolves to the object. The instance case used to be
+        compared via str(), which yields Tenant.__str__ (the NAME) - so it never
+        matched a uuid and owners could not create a channel, automation or template
+        in their own tenant.
+        """
+        if value is None:
+                return None
+
+        return str(getattr(value,'pk',value))
+
+
 def check_tenant_access(user,tenant_id,branch_id=None):
         """
                 Returns (True, None) if access granted
                 Returns (False, "message") if access denied
+
+                tenant_id / branch_id may each be a model instance, a UUID or a string.
         """
 
         if user.is_super_admin:
                 return (True,None)
 
-        
-        if str(user.tenant.id) != str(tenant_id):
+        tenant_id = _as_id(tenant_id)
+        branch_id = _as_id(branch_id)
+
+        if user.tenant is None or str(user.tenant.id) != tenant_id:
                 return (False,_("You can't access another tenant"))
-        
-      
-        
+
+
+
         if user.is_owner:
                 return (True,None)
         
         if user.is_branch_manager or user.is_staff_role:
-                if (str(user.branch.id) != str(branch_id)):
+                if user.branch is None or str(user.branch.id) != branch_id:
                         return (False,_("You can't access that branch "))
 
                 return (True,None)

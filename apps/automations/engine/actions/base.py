@@ -41,14 +41,19 @@ class BaseAction:
                                 )
                         creds = channel.credentials
                         try:
-                                self.provider_class().send(creds, **prepared_data)
+                                # provider.send(credentials, payload) - one dict, not
+                                # keyword arguments. Splatting prepared_data raised
+                                # TypeError on every channel-backed action.
+                                self.provider_class().send(creds, prepared_data)
                         except Exception:
                                 raise ExecutionError(
                                 _("An error occurred while executing action %(id)s")
                                 % {"id": str(self.action_model.id)}
                                 )
                 else:
-                        self._execute_without_channel(prepared_data)
+                        # Honour what the subclass reports instead of always claiming
+                        # success; the executor's retry logic reads this return value.
+                        return bool(self._execute_without_channel(prepared_data))
 
                 return True
         

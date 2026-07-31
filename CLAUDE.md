@@ -146,31 +146,53 @@ Gövdede madde madde ne + neden. Eski `(feat:channels)` stili terk edildi.
 
 ---
 
-## 5. Geliştirme Ortamı
+## 5. Geliştirme Ortamı ve Testler
 
-Depoda venv yok, makinede Django/Redis global kurulu değil.
+```bash
+./run_tests.sh                    # tüm suite (285 test) — venv'i gerekirse kendisi kurar
+./run_tests.sh tests.test_core    # tek modül / sınıf / metot
+./run_tests.sh --redis            # aynı suite, docker'da gerçek Redis'e karşı
+```
 
+Elle kurulum istersen:
 ```bash
 python3 -m venv venv
 ./venv/bin/pip install -r requirements-dev.txt   # requirements.txt + fakeredis[lua]
 ./venv/bin/python manage.py migrate
-./venv/bin/python manage.py test tests           # 54 test, Redis sunucusu gerekmez
+./venv/bin/python manage.py test tests
 ```
 
 - Varsayılan settings: `config.settings.development` (SQLite, `DEBUG=True`,
   tüm SQL sorguları console'a loglanır).
-- **Testler Redis sunucusu istemez.** `fakeredis[lua]` Lua scriptlerini gerçekten
-  `lupa` ile çalıştırır — mock değil. Gerçek bir sunucuya karşı doğrulamak için:
-  ```bash
-  docker run -d -p 6399:6379 redis:7-alpine
-  AUTOFLOW_TEST_REDIS_URL=redis://localhost:6399/0 ./venv/bin/python manage.py test tests
-  ```
-  (`tests/utils.py` bu değişkeni okur. Verilen DB testler arası `FLUSHDB` edilir,
-  o yüzden tek kullanımlık bir instance ver.)
+- **Suite hiçbir servise ihtiyaç duymaz** — Redis, Celery worker, Postgres yok.
+  `fakeredis[lua]` Lua scriptlerini `lupa` ile gerçekten çalıştırır (mock değil).
+  Gerçek sunucuya karşı: `./run_tests.sh --redis` veya elle
+  `AUTOFLOW_TEST_REDIS_URL=redis://localhost:6399/0`. Verilen DB testler arası
+  `FLUSHDB` edilir — tek kullanımlık bir instance ver.
 - `.env` gerekli: `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `DB_*`. `REDIS_URL`
   opsiyonel (default `redis://localhost:6379/0`).
 - Uygulama **Redis kapalıyken de çalışır**: cache katmanındaki her hata `None`'a
   düşer ve istek DB'ye gider. `core.cache.service` logger'ında ERROR görürsün.
+
+### Test suite haritası
+
+| Modül | Kapsam | Test |
+|---|---|---|
+| `tests/factories.py` | Ortak fixture kurucuları — yeni test yazarken **buradan başla** | — |
+| `tests/utils.py` | `CacheTestMixin` (fakeredis'li gerçek cache), `make_test_redis()` | — |
+| `test_core.py` | roles, permissions, `BaseModel`, JWT claim'leri, pagination, exception handler | 35 |
+| `test_channels.py` | provider registry, credential şema validasyonu, SMS/e-posta provider'ları, Channel CRUD + RBAC | 37 |
+| `test_automations_engine.py` | evaluator (tüm operatörler + AND/OR), executor (sıra, stop/continue/retry), template_manager, action sınıfları, orchestrator, signal handler | 53 |
+| `test_automations_serializers.py` | şema güdümlü trigger/action config validasyonu, webhook secret üretimi | 33 |
+| `test_automations_api.py` | Automation CRUD + `allowed_roles`, Template CRUD, webhook auth, manuel tetikleme | 40 |
+| `test_users_auth.py` | login/JWT, kayıt rol kuralları, admin update, silme, tenant/branch CRUD | 33 |
+| `test_cache_lua.py` | **gerçek `.lua` dosyalarını çalıştırır** — Lua'ya dokunduysan bu yeşil kalmalı | 15 |
+| `test_cache_service.py` | `CachingService` çağrı imzaları (mock Redis — Lua'yı doğrulamaz) | 8 |
+| `test_cache_integration.py` | uçtan uca: gerçek view + signal + Lua, index zehirlenmesi ve invalidation | 15 |
+| `test_api_endpoints.py` / `test_users_endpoints.py` | tenant ve kullanıcı uçları (mixin yolu) | 16 |
+
+**Yeni test yazarken:** fixture'ları `tests/factories.py`'den al; endpoint testinde
+cache'i mock'lama, `CacheTestMixin` kullan (mock'lamak BUG-02'yi aylarca gizledi).
 
 ---
 
@@ -233,6 +255,13 @@ sınıfta hatalar. Kök neden analizleri `logbook.md` → 2026-07-31.
 | Mock'lanmış Redis ile Lua test etmek | 5 test yeşilken `single_set.lua` hiçbir zaman index yazmadı | Lua değişikliği = `tests/test_cache_lua.py` (fakeredis, gerçek yürütme) |
 | Cache'i mock'layarak endpoint testi | Bozuk `CELERY_RESULT_BACKEND`'i gizledi | Endpoint testlerinde `tests.utils.CacheTestMixin` kullan, cache'i stub'lama |
 | İstisnayı loglamadan 500 döndürmek | Yukarıdakilerin çoğu aylarca görünmez kaldı | `core/exceptions.py` artık `logger.exception` çağırıyor — kaldırma |
+| Ayar anahtarında yazım hatası (`DEFAULT_PERMISSON_CLASSES`) | DRF bilinmeyen anahtarı yok sayar → varsayılan sessizce `AllowAny` kalır, tüm otomasyon uçları anonime açıktı | Ayar adını değiştirdiysen bir anonim istek testiyle doğrula |
+| `serializer_cls(data=config).is_valid()` | `BaseConfigSerializer`'ın alanı yok → `validate_config` **hiç çağrılmaz**, `validated_data` boş döner ve config sessizce silinir | Şema doğrulaması için `serializer_cls().validate_config(cfg)` — channels'taki `validate_credentials` ile aynı desen |
+| Validator'ın `False` döndürmesi | Şema yürüyücüsü **sadece istisna yakalar**; `croniter.is_valid` False dönüyordu, her cron ifadesi kabul ediliyordu | Validator reddediyorsa **raise etmeli** (`serializers/validators.py` başındaki nota bak) |
+| `read_only_fields = '__all__'` | DRF liste/tuple ister → `TypeError` | `read_only_fields = fields` |
+| `check_tenant_access(user, tenant_obj)` | Serializer'lar model instance geçer; `str(Tenant)` **adı** verir, UUID ile asla eşleşmez | Artık `_as_id()` normalleştiriyor — ama id geçmek yine de daha net |
+| Nested serializer çıktısını id sanmak | `AutomationReadSerializer.tenant` bir **dict**; cache'li detail yolunda 403 üretiyordu | `core/mixins._nested_id()` çözüyor; yeni nested alan eklersen kontrol et |
+| `provider_class = EmailProvider()` | `base.execute` `self.provider_class()` çağırıyor → instance çağrılmaya çalışılır | Registry'lerde **sınıf** tut, instance değil |
 
 ### Bilerek bırakılanlar
 
@@ -245,6 +274,13 @@ sınıfta hatalar. Kök neden analizleri `logbook.md` → 2026-07-31.
   mu belirsiz — mixin'e taşımadan önce karar ver.
 - `/api/v1/users/me/` PUT yalnızca **şifre değiştirir**. Kullanıcının kendi adını
   güncelleyebileceği bir uç yok.
+- `apps/websites` ve `apps/analytics` boş iskeletler (model/view yok, `urlpatterns = []`).
+  Testleri de yok — test edilecek davranış yok.
+- Swagger/schema uçları (`/api/schema/`, `/api/docs/`) artık kimlik doğrulaması
+  istiyor, çünkü DRF varsayılanı düzeltildi. Public istiyorsan view'lara açıkça
+  `permission_classes = [AllowAny]` ver.
+- `AutomationDetailView` `allowed_roles_for_list` tanımlamıyor; erişim `allowed_roles`
+  alanı üzerinden obje düzeyinde denetleniyor. Kasıtlı.
 
 ---
 
@@ -259,7 +295,9 @@ sınıfta hatalar. Kök neden analizleri `logbook.md` → 2026-07-31.
    `tests/test_cache_lua.py` bunu zaten kontrol ediyor.
 4. **Signal/Celery'e dokunmadan önce** `core/signals.py` ve
    `apps/automations/signals.py`'yi oku.
-5. **Testleri çalıştır: `manage.py test tests`** (54 test, Redis gerekmez). Gerçek
-   Redis doğrulaması için §5'teki `AUTOFLOW_TEST_REDIS_URL`.
-6. **Her anlamlı değişikliği `logbook.md`'ye zaman damgasıyla yaz**: ne, neden, nasıl;
+5. **Testleri çalıştır: `./run_tests.sh`** (285 test, hiçbir servis gerekmez).
+   Cache/Lua'ya dokunduysan `./run_tests.sh --redis` ile gerçek Redis'e karşı da koştur.
+6. **Yeni davranış = yeni test.** Fixture'lar `tests/factories.py`'de; §5'teki
+   haritadan hangi dosyaya ait olduğunu bul.
+7. **Her anlamlı değişikliği `logbook.md`'ye zaman damgasıyla yaz**: ne, neden, nasıl;
    hata ise kök neden + denenip başarısız olan yollar.

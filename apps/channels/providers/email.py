@@ -71,12 +71,17 @@ class EmailProvider(BaseProvider):
 
         def send(self,credentials,payload):
 
+                # Read the payload BEFORE entering the try: the error branch reports on
+                # `to` and `subject`, and when EmailBackend() was the thing that failed
+                # they had never been assigned, so the real fault was replaced by an
+                # UnboundLocalError.
+                to = payload.get('to')
+                subject = payload.get('subject')
+                body = payload.get('body')
+                from_email = credentials.get('username')
+
                 try:
                         backend = EmailBackend(**credentials,fail_silently=False)
-                        to = payload.get('to')
-                        subject=payload.get('subject')
-                        body= payload.get('body')
-                        from_email= credentials.get('username')
 
                         message = EmailMessage(
                                 to = [to],
@@ -88,6 +93,8 @@ class EmailProvider(BaseProvider):
                         logger.info(f" An email ({subject})has been sent to the {to} from {from_email}")
                         
                         return True if num_sent > 0 else False
-                except Exception as e:
-                        logger.error(f"An error occured while sending email to {to}, with the subject {subject}, error :" , str(e))
+                except Exception:
+                        # logger.error(msg, arg) reads arg as a %-format parameter; with
+                        # no placeholder in the message, logging itself failed here.
+                        logger.exception(f"An error occured while sending email to {to}, with the subject {subject}")
                         raise ChannelError(f"An error occured while sending email to {to}, with the subject {subject}")

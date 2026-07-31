@@ -11,6 +11,195 @@ Mimari, stil ve kalıcı kurallar burada değil → `CLAUDE.md`.
 
 ---
 
+## 2026-08-01 — Sistem geneli test suite'i (54 → 285 test)
+
+**Kim:** Claude (Opus 5) · **Branch:** `develop`
+**Durum:** 285 test geçiyor. 21 yeni bug bulundu ve düzeltildi.
+
+Görev: "sistemde her şey hakkında test olsun, sonra da çalıştırabilelim."
+Cache dışındaki hiçbir şeyin testi yoktu. Test yazmak, test edilmeyen kodun büyük
+kısmının **hiç çalışmadığını** ortaya çıkardı.
+
+---
+
+### 1. Ne eklendi
+
+| Dosya | Kapsam | Test |
+|---|---|---|
+| `tests/factories.py` | Ortak fixture kurucuları | — |
+| `tests/__init__.py` | Suite genelinde fakeredis'li `cache_service` (aşağıda "neden") | — |
+| `tests/test_core.py` | roles, permissions, BaseModel, JWT, pagination, exception handler | 35 |
+| `tests/test_channels.py` | provider registry, credential şeması, SMS/e-posta provider, Channel CRUD | 37 |
+| `tests/test_automations_engine.py` | evaluator, executor, template_manager, action'lar, orchestrator, signal handler | 53 |
+| `tests/test_automations_serializers.py` | şema güdümlü trigger/action validasyonu | 33 |
+| `tests/test_automations_api.py` | Automation/Template CRUD, webhook auth, manuel tetikleme | 40 |
+| `tests/test_users_auth.py` | login/JWT, kayıt rol kuralları, admin update/delete, tenant/branch CRUD | 33 |
+| `run_tests.sh` | Tek komutluk runner; venv'i gerekirse kendisi kurar, `--redis` ile docker'da gerçek Redis | — |
+
+**`tests/__init__.py` neden cache_service'i değiştiriyor:** `core/apps.py` boot'ta
+gerçek bir Redis client kuruyor ve `core/signals.py` her model kaydında onun üzerinden
+invalidate ediyor. Testlerde bu, her factory çağrısında localhost:6379'a TCP denemesi
+demekti — doğru davranış (hata `None`'a düşüyor) ama yavaş ve traceback çöplüğü.
+fakeredis'e çevirmek suite'i hermetik yapıyor, **gerçek `CachingService` ve gerçek
+Lua yine çalışıyor**.
+
+---
+
+### 2. Bulunan ve düzeltilen bug'lar
+
+Sıralama: en geniş etkiden en dara.
+
+#### 2.1 Güvenlik — tüm kimlik doğrulaması kapalıydı
+
+`config/settings/base.py`:
+```python
+'DEFAULT_PERMISSON_CLASSES' : [...]   # PERMISSION'da bir 'I' eksik
+```
+DRF bilinmeyen anahtarları sessizce yok sayar → varsayılan izin `AllowAny` olarak
+kaldı. `permission_classes` tanımlamayan **her view anonime açıktı**: tüm automations
+app'i (liste, oluşturma, güncelleme, silme), template'ler, manuel tetikleme.
+
+Düzeltince login kırıldı — `LoginView` public olmalıydı ama bunu hiç belirtmemişti;
+typo sayesinde tesadüfen çalışıyordu. `permission_classes = [AllowAny]` +
+`authentication_classes = []` eklendi. Aynı dosyada `SPECTATULAR_SETTINGS` de
+düzeltildi (drf-spectacular hiç okumuyordu).
+
+> **Ders (`CLAUDE.md` §7'ye işlendi):** ayar anahtarı yazım hataları hata vermez,
+> sessizce varsayılana düşer. Bu projede üçüncü kez oldu (`CELERY_BORKER_URL`,
+> `'django_db'`, şimdi bu). Ayar adı değiştirdiysen davranışı bir testle doğrula.
+
+#### 2.2 Şema güdümlü validasyon hiç çalışmıyordu
+
+`AutomationTriggerSerializer.validate` ve `AutomationActionWriteSerializer.validate`:
+```python
+trigger_serializer = serializer_cls(data=config)
+trigger_serializer.is_valid(raise_exception=True)
+data['config'] = trigger_serializer.validated_data
+```
+`BaseConfigSerializer` **hiç alan tanımlamıyor**. `validate_config` ise `config` adlı
+bir alan için field-level hook. Serializer `data=config` ile kurulunca bağlanacak alan
+yok → `validate_config` **asla çağrılmıyor** → `validated_data` **boş dict** dönüyor.
+
+İki sonuç:
+1. Hiçbir trigger/action config'i doğrulanmıyordu (geçersiz cron, eksik webhook URL'i,
+   bozuk e-posta — hepsi kabul).
+2. Config'ler **sessizce siliniyordu**: `data['config'] = {}` olarak kaydediliyordu.
+   Zamanlanmış bir trigger sonra `config['cron_expression']` üzerinde `KeyError`
+   veriyordu — CLAUDE.md'nin "mimarinin belkemiği" dediği katman fiilen yoktu.
+
+Düzeltme: `serializer_cls().validate_config(config)` — `apps/channels`'ın
+`validate_credentials` ile yaptığının aynısı. İki app aynı deseni kullanıyordu,
+biri doğru biri yanlış.
+
+#### 2.3 Otomasyon motoru çalıştırılamaz durumdaydı
+
+Önceki oturumda orchestrator'ın `related_name` hatası düzeltilmişti; testler geri
+kalanını ortaya çıkardı:
+
+- **`AutomationAction.template` alanı hiç yoktu.** `BaseAction.prepare()` her zaman
+  `self.action_model.template` okuyordu → her action çalıştırmasında `AttributeError`.
+  Migration `0003_..._template` adı yanıltıcı: o `Template` **modelini** yaratıyor,
+  action'a FK eklemiyor. Alan eklendi + `0005_automationaction_template`.
+- **`provider_class = EmailProvider()`** — instance atanmış, `base.execute` ise
+  `self.provider_class()` çağırıyor, yani instance'ı çağırmaya çalışıyor. Dört action
+  sınıfında da sınıfa çevrildi.
+- **`send(creds, **prepared_data)`** — provider imzası `send(credentials, payload)`,
+  yani tek dict. Splat her kanal tabanlı action'da `TypeError` veriyordu.
+- **`TemplateManager.fetch`: `resolved['field_name'] = value`** — literal string key.
+  Tüm alanlar tek bir `'field_name'` girdisine çöküyordu, `fill()` hiçbir gerçek
+  `{{placeholder}}`'ı eşleştiremiyordu. Şablon motoru hiç çalışmamıştı.
+- **Executor retry sonsuz döngü.** Sayaç yalnızca `except` içinde artıyordu; raise
+  etmeden falsy dönen bir action worker'ı kilitliyordu. `_retry()` olarak ayrıldı,
+  sayaç her denemede ilerliyor.
+
+#### 2.4 Channels app'i tamamen ölüydü
+
+`ChannelListCreateView.get` → `self.get_queryset(...)`, `post` → `self.check_permission(...)`.
+**İkisi de mixin'de yok** — caching refactor'ünde `get_cached_queryset` /
+`check_role_access` olmuşlardı. Her channels isteği `AttributeError` → 500.
+
+Ayrıca view'lar `allowed_roles` tanımlıyordu; mixin yalnızca `allowed_roles_for_list`
+okuyor → rol kısıtı hiç uygulanmıyordu. Ve `read_only_fields = '__all__'` DRF'de
+`TypeError` veriyor (liste/tuple olmalı) — `ChannelReadSerializer` ve
+`TemplateReadSerializer`'da.
+
+#### 2.5 `check_tenant_access` model instance ile çalışmıyordu
+
+Serializer'lar `PrimaryKeyRelatedField` kullanıyor, o da **nesne** döndürüyor.
+`str(tenant_obj)` ise `Tenant.__str__` yani **adı** veriyor → UUID ile asla eşleşmiyor.
+Sonuç: **owner kendi tenant'ında hiçbir şey oluşturamıyordu** — kanal, otomasyon,
+şablon. Üç ayrı çağrı yeri aynı hatayı taşıyordu.
+
+Düzeltme: `_as_id()` normalleştirici — instance / UUID / string hepsini kabul ediyor.
+Çağrı yeri başına yamamak yerine fonksiyonun içine koydum; sonraki çağıran da
+korunuyor. Ayrıca `user.tenant`/`user.branch` `None` iken çökmek yerine reddediyor.
+
+#### 2.6 Cache'li detail yolu iç içe serializer'ları anlamıyordu
+
+`AutomationReadSerializer.tenant` bir `TenantSerializer` — yani cache'lenen dict'te
+`{'id':…, 'name':…}` duruyor. `get_cached_object` bunu id sanıp karşılaştırıyordu →
+**otomasyon ve şablon detayını sahibi bile 403 alıyordu.** `core/mixins._nested_id()`
+eklendi.
+
+#### 2.7 Kalanlar
+
+- **`ExtendedRefreshToken`** yalnızca `access_token_class` tanımlıyordu, ama
+  `RefreshToken.access_token` `for_user`'ı çağırmaz — claim'leri refresh payload'ından
+  kopyalar. Yani **login'de dağıtılan access token'da rol/tenant/branch claim'i yoktu**.
+  Claim üretimi `add_scope_claims()`'e alındı, iki yol da kullanıyor.
+- **`croniter.is_valid` raise etmiyor, `False` dönüyor.** Şema yürüyücüsü yalnızca
+  istisna yakalıyor → her cron ifadesi geçerli sayılıyordu.
+  `validate_cron_expression` sarmalayıcısı eklendi, kontrat
+  `serializers/validators.py` başına yazıldı.
+- **`TemplateWriteSerializer.validate`**: `set(re.findall(r'...'), raw_text)` —
+  kapanış parantezi yanlış yerde, `TypeError`. Her şablon oluşturma/güncelleme
+  patlıyordu. Ayrıca hata mesajı `%(field)s` diyip `{'fields': …}` geçiyordu (KeyError),
+  ve `validate_fields` döngü içinde `value`'yu eziyordu.
+- **`UserRegisterSerializer`**: super_admin'in tenant'ı yok, `branch.tenant != user.tenant`
+  karşılaştırması her şubeyi reddediyordu → super_admin kimseyi bir şubeye kaydedemiyordu.
+- **Zamanlanmış trigger sinyali** `config['cron_expression']` ile abone oluyordu;
+  `one_time` schedule'da o alan yok → `KeyError`.
+- **`EmailProvider.send`** except bloğu `to`/`subject`'i okuyordu ama backend kurulumu
+  patladığında bunlar hiç atanmamış oluyordu → gerçek hata `UnboundLocalError` ile
+  değişiyordu. Ayrıca yine `logger.error(msg, str(e))` kalıbı.
+
+---
+
+### 3. Denenip vazgeçilen
+
+- **Şema yürüyücüsünü `False` dönen validator'ları da reddedecek şekilde
+  değiştirmek.** Cron sorununu çözerdi ama Django validator'ları (`validate_email`
+  vb.) `None` döner — "falsy = geçersiz" kuralı hepsini kırardı. Bunun yerine kontrat
+  netleştirildi ("reddetmek = raise etmek") ve `croniter` ona uyduruldu.
+- **`AutomationAction.template` yerine `getattr(..., None)` koymak.** Migration'sız
+  düzelirdi ama şablon motoru (`template_manager.py` + `Template` modeli, ikisi de
+  yazılmış) ulaşılamaz kalırdı. Kod zaten alanı bekliyordu; eksik olan şemaydı.
+- **Root'taki `test_cache.py`'yi bırakmak.** Geçen oturum "bayat, silmek senin kararın"
+  demiştim. Ama `manage.py test` (argümansız) onu toplayıp import hatası veriyor —
+  yani "hepsini çalıştır" isteğini fiilen bloke ediyordu. `tests/test_cache_lua.py`
+  onun tam üst kümesi olduğu için silindi.
+
+---
+
+### 4. Sonuç
+
+```
+öncesi : 54 test — yalnızca cache katmanı
+sonrası: 285 test — core, channels, automations (engine + serializer + API), users, tenants
+```
+
+Çalıştırma: `./run_tests.sh` (hiçbir servis gerekmez) veya `./run_tests.sh --redis`.
+
+**Kalan boşluklar:**
+- `apps/websites`, `apps/analytics` boş iskeletler — test edilecek davranış yok.
+- Instagram/WhatsApp provider'larının `send()` yolları registry ve şema düzeyinde test
+  edildi, HTTP çağrıları değil (SMS ve e-posta için edildi).
+- Gerçek Redis'e karşı hâlâ koşturulmadı (`--redis` bunun için hazır; bu makinede
+  docker soketi izni yok).
+- `master` hâlâ `develop`'ın gerisinde.
+
+---
+
 ## 2026-07-31 (ikinci oturum) — Bulguların düzeltilmesi
 
 **Kim:** Claude (Opus 5) · **Branch:** `develop`

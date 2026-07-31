@@ -43,12 +43,18 @@ class AutomationTriggerSerializer(serializers.ModelSerializer):
 
                 if not serializer_cls:
                         raise serializers.ValidationError(_("Invalid Serializer type"))
-                
-                trigger_serializer = serializer_cls(data=config)
 
-                trigger_serializer.is_valid(raise_exception = True)
-
-                data['config'] = trigger_serializer.validated_data
+                # Call validate_config directly, the way apps/channels does with
+                # validate_credentials.
+                #
+                # The previous form was serializer_cls(data=config).is_valid(), which
+                # did nothing at all: BaseConfigSerializer declares no fields, so
+                # to_internal_value had nothing to bind, validate_config (a field-level
+                # hook for a field named "config") was never invoked, and
+                # validated_data came back EMPTY. Every trigger config was silently
+                # discarded and stored as {} - which is why a scheduled trigger then
+                # died on config['cron_expression'].
+                data['config'] = serializer_cls().validate_config(config)
                 return data
 
 
@@ -87,10 +93,9 @@ class AutomationActionWriteSerializer(serializers.ModelSerializer):
                                 _("Channel type doesn't match with action type")
                         )
 
-                action_serializer = serializer_cls(data=config)
-                action_serializer.is_valid(raise_exception = True)
-
-                data['config'] =  action_serializer.validated_data
+                # Same fix as AutomationTriggerSerializer: the .is_valid() form
+                # validated nothing and blanked the config.
+                data['config'] = serializer_cls().validate_config(config)
                 return data
         
 

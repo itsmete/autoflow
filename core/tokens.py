@@ -1,8 +1,8 @@
 from rest_framework_simplejwt.tokens import AccessToken,RefreshToken
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-"""
-Interior of access tokens 
+r"""
+Interior of access tokens
 
 Token (Base)
 |
@@ -45,19 +45,28 @@ e.g Payload is like ;
 """
 
 
+def add_scope_claims(token,user):
+        """
+        The claims every part of the API reads off a token: who, what role, which
+        tenant, which branch. Defined once so the access and refresh paths cannot
+        drift apart.
+        """
+        token['role'] = user.role
+        token['email'] = user.email
+        token['tenant_id'] = str(user.tenant.id) if user.tenant else None
+        token['branch_id'] = str(user.branch.id) if user.branch else None
+
+        return token
+
+
 class ExtendedAccessToken(AccessToken):
         @classmethod
         def for_user(cls,user):
 
                 token = super().for_user(user)
 
-                token['role'] = user.role
-                token['email'] = user.email
-                token['tenant_id'] = str(user.tenant.id) if user.tenant else None
-                token['branch_id'] = str(user.branch.id) if user.branch else None
+                return add_scope_claims(token,user)
 
-                return token
-        
 
 class ExtendedTokenObtainSerializer(TokenObtainPairSerializer):
         token_class = ExtendedAccessToken # the new cls.token_class , it was default AccessToken
@@ -70,3 +79,15 @@ class ExtendedTokenObtainSerializer(TokenObtainPairSerializer):
         
 class ExtendedRefreshToken(RefreshToken):
         access_token_class = ExtendedAccessToken
+
+        @classmethod
+        def for_user(cls,user):
+                token = super().for_user(user)
+
+                # RefreshToken.access_token does NOT call ExtendedAccessToken.for_user;
+                # it instantiates the class and copies the claims already present on
+                # the refresh payload. So setting access_token_class alone was not
+                # enough - the token handed out by LoginView (and every rotated one)
+                # carried no role/tenant/branch claim at all. Putting them on the
+                # refresh payload is what makes them reach the access token.
+                return add_scope_claims(token,user)

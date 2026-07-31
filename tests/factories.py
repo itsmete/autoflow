@@ -1,0 +1,167 @@
+"""
+Shared fixture builders.
+
+Every test needs some slice of the tenant -> branch -> user hierarchy, and building
+it inline in each setUp is how the existing tests drifted apart (one used
+password="pass", another asserted a nested serializer as a bare uuid). Build it here
+once so a model change breaks one file, not fifteen.
+"""
+import uuid
+
+from apps.automations.models import (
+    Automation,
+    AutomationAction,
+    AutomationCondition,
+    AutomationLog,
+    AutomationTrigger,
+    Template,
+)
+from apps.channels.models import Channel
+from apps.tenants.models import Branch, Tenant
+from apps.users.models import User
+
+# Long enough to satisfy the 8-char minimum on the password-change serializer.
+PASSWORD = "password123"
+
+
+def make_tenant(name="Acme", slug=None):
+    return Tenant.objects.create(name=name, slug=slug or f"acme-{uuid.uuid4().hex[:8]}")
+
+
+def make_branch(tenant, name="Branch", **kwargs):
+    return Branch.objects.create(tenant=tenant, name=name, **kwargs)
+
+
+def make_user(role, tenant=None, branch=None, email=None, **kwargs):
+    return User.objects.create_user(
+        email=email or f"{role}-{uuid.uuid4().hex[:8]}@test.com",
+        password=PASSWORD,
+        role=role,
+        tenant=tenant,
+        branch=branch,
+        **kwargs,
+    )
+
+
+def make_super_admin(**kwargs):
+    # is_staff mirrors what UserRegisterSerializer.create does for this role: it is
+    # django's admin flag, not the staff ROLE.
+    return make_user("super_admin", is_staff=True, **kwargs)
+
+
+def make_owner(tenant, **kwargs):
+    return make_user("owner", tenant=tenant, **kwargs)
+
+
+def make_branch_manager(tenant, branch, **kwargs):
+    return make_user("branch_manager", tenant=tenant, branch=branch, **kwargs)
+
+
+def make_staff(tenant, branch, **kwargs):
+    return make_user("staff", tenant=tenant, branch=branch, **kwargs)
+
+
+EMAIL_CREDENTIALS = {
+    "host": "smtp.example.com",
+    "port": 587,
+    "username": "sender@example.com",
+    "password": "secret",
+    "use_tls": True,
+}
+
+SMS_CREDENTIALS = {
+    "api_url": "https://sms.example.com/send",
+    "auth_type": "bearer",
+    "auth_credentials": {"token": "abc123"},
+    "from_number": "+905551112233",
+    "body_template": {"phone": "{to}", "text": "{message}"},
+}
+
+
+def make_channel(tenant, branch=None, channel_type="email", credentials=None, name="Chan"):
+    return Channel.objects.create(
+        name=name,
+        tenant=tenant,
+        branch=branch,
+        channel_type=channel_type,
+        credentials=credentials if credentials is not None else dict(EMAIL_CREDENTIALS),
+    )
+
+
+def make_automation(tenant, branch=None, allowed_roles=None, name="Automation", **kwargs):
+    return Automation.objects.create(
+        name=name,
+        tenant=tenant,
+        branch=branch,
+        allowed_roles=allowed_roles if allowed_roles is not None else ["super_admin", "owner"],
+        metadata={},
+        **kwargs,
+    )
+
+
+def make_trigger(automation, trigger_type="manual", config=None, initial_data=None):
+    return AutomationTrigger.objects.create(
+        automation=automation,
+        trigger_type=trigger_type,
+        config=config if config is not None else {},
+        initial_data=initial_data if initial_data is not None else {},
+    )
+
+
+def make_condition(automation, field="amount", operator="gt", value="100", logical_operator="and"):
+    return AutomationCondition.objects.create(
+        automation=automation,
+        field=field,
+        operator=operator,
+        value=value,
+        logical_operator=logical_operator,
+    )
+
+
+def make_action(automation, action_type="webhook", order=1, on_failure="stop",
+                config=None, channel=None):
+    if config is None:
+        config = {
+            "url": "https://example.com/hook",
+            "method": "POST",
+            "headers": {},
+            "payload": {},
+        }
+    return AutomationAction.objects.create(
+        automation=automation,
+        action_type=action_type,
+        order=order,
+        on_failure=on_failure,
+        config=config,
+        channel=channel,
+    )
+
+
+def make_log(automation, status="success", error_message="", execution_context=None):
+    return AutomationLog.objects.create(
+        automation=automation,
+        status=status,
+        error_message=error_message,
+        execution_context=execution_context if execution_context is not None else {},
+    )
+
+
+def make_template(tenant, branch=None, name="Greeting", raw_text="Hi {{customer}}",
+                  fields=None, channel_type="email"):
+    if fields is None:
+        fields = {
+            "customer": {
+                "type": "string",
+                "required": True,
+                "description": "Customer name",
+                "source": "payload",
+            }
+        }
+    return Template.objects.create(
+        name=name,
+        raw_text=raw_text,
+        fields=fields,
+        tenant=tenant,
+        branch=branch,
+        channel_type=channel_type,
+    )

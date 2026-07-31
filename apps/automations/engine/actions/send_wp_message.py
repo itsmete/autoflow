@@ -3,5 +3,5 @@ from .base import BaseAction
 
 class SendWhatsappMessage(BaseAction):
 
-        provider_class = WhatsAppProvider()
+        provider_class = WhatsAppProvider
         requires_channel = True

@@ -136,6 +136,11 @@ class AutomationAction(BaseModel):
 
         channel = models.ForeignKey('channels.Channel',null=True,blank=True,related_name='automation_actions',on_delete=models.SET_NULL)
 
+        # Optional message body generator. BaseAction.prepare() has always read
+        # self.action_model.template, but the field was never declared - every action
+        # execution died with AttributeError before reaching its provider.
+        template = models.ForeignKey('Template',null=True,blank=True,related_name='actions',on_delete=models.SET_NULL)
+
         order = models.PositiveIntegerField()
 
         on_failure = models.CharField(choices=OnFailureChoices)

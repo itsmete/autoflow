@@ -1,5 +1,5 @@
 from rest_framework.views import APIView,Response,status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny,IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 
 
@@ -16,6 +16,13 @@ UserAdminUpdateSerializer,UserSelfUpdateSerializer,UserReaderSerializer
 
 
 class LoginView(APIView):
+
+        # Obtaining a token cannot itself require a token. This was implicit while
+        # REST_FRAMEWORK's default permission key was misspelled and everything fell
+        # back to AllowAny; with the default corrected to IsAuthenticated it has to
+        # be stated.
+        permission_classes = [AllowAny]
+        authentication_classes = []
 
         serializer_class = UserLoginSerializer
 
