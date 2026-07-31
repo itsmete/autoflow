@@ -1,8 +1,20 @@
 venv/
+.venv/
 .env
 *.pyc
 __pycache__/
 db.sqlite3
 *.log
 media/
-logbook.md
+staticfiles/
+
+# Personal claude-code overrides; .claude/settings.json IS shared.
+.claude/settings.local.json
+
+# A CERN ROOT install that ended up inside the project directory by accident.
+# 7600+ files, unrelated to autoflow. Not deleted here - move it out when convenient.
+root/
+
+# NOTE: logbook.md used to be listed here. It is deliberately tracked now: it is the
+# project's cumulative engineering log (why a change was made, which fixes were tried
+# and failed), which is worth nothing if it only exists on one machine.

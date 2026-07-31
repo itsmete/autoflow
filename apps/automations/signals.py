@@ -24,7 +24,11 @@ def register_existing_signal_triggers(data : AutomationTrigger = None):
                 model_name = obj.config.get('model_name')
                 event = obj.config.get('event_type')
 
-                handler = create_signal_handler(obj.id, event=str(event))
+                # obj is the TRIGGER; the orchestrator looks the row up as
+                # Automation.objects.get(id=...), so passing obj.id sent it a trigger
+                # pk and every signal-driven run died on Automation.DoesNotExist -
+                # logged as "Automation not found" and otherwise invisible.
+                handler = create_signal_handler(obj.automation_id, event=str(event))
                 try:
                         sender_model = apps.get_model(model_name)
                 except LookupError as e:
@@ -60,7 +64,11 @@ def create_or_update_periodic_task_after_trigger_object_changed(sender,instance,
                         defaults={
                                 'task' : "apps.automations.tasks.run_automation",
                                 'crontab' : schedule,
-                                'args' : json.dumps([instance.automation.id,instance.initial_data]),
+                                # UUIDs are not JSON serializable, and CELERY_TASK_SERIALIZER
+                                # is 'json' - passing the raw pk raised TypeError here and
+                                # made scheduled triggers impossible to create. The task
+                                # looks the automation up by pk, so a string is enough.
+                                'args' : json.dumps([str(instance.automation.id),instance.initial_data]),
                                 'enabled' : instance.automation.is_active 
                         },
                         

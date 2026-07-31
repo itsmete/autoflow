@@ -18,7 +18,12 @@ class Tenant(BaseModel):
 
         def __str__(self):
                 return self.name
-        
+
+
+        def get_scope_ids(self):
+                # A Tenant is its own tenant scope, and belongs to no branch.
+                return (self.pk, None)
+
         class Meta:
                 db_table = 'tenants' # defining table name for DB
 
@@ -52,7 +57,12 @@ class Branch(BaseModel):
 
         def __str__(self):
                 return f"{self.tenant.name} - {self.name}"
-        
+
+
+        def get_scope_ids(self):
+                # A Branch is its own branch scope, under its tenant.
+                return (self.tenant_id, self.pk)
+
         class Meta:
                 db_table = 'branches'
     

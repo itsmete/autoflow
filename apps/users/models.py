@@ -103,5 +103,18 @@ class User(AbstractBaseUser,PermissionsMixin,BaseModel):
         def is_branch_manager(self):
                 return self.role == self.Role.BRANCH_MANAGER
 
+        @property
+        def is_staff_role(self):
+                """
+                Role == staff. NOT the same thing as `is_staff`, which is django's
+                admin-panel flag and is set True for super admins.
+
+                Scoping code used to read `user.is_branch_manager or user.is_staff`
+                meaning "branch-scoped user", which is wrong in both directions: a
+                staff-role user has is_staff=False and fell through to no scope at
+                all, while a super admin has is_staff=True.
+                """
+                return self.role == self.Role.STAFF
+
         class Meta:
                 db_table = 'users'

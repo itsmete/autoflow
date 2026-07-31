@@ -1,6 +1,9 @@
 from rest_framework.views import exception_handler,status
 from rest_framework.response import Response
 from django.utils.translation import gettext_lazy as _
+import logging
+
+logger = logging.getLogger(__name__)
 
 ERROR_CODES = {
     400: 'validation_error',
@@ -33,6 +36,19 @@ def extended_exception_handler(exc,context):
         response = exception_handler(exc,context)
 
         if response is None:
+                # DRF could not map this to an API error, so it is a real bug.
+                # Without this the traceback is lost and every defect looks like an
+                # opaque 500 - which is exactly how a TypeError in core/roles.py
+                # survived unnoticed in every /api/v1/users/ endpoint.
+                view = context.get('view') if context else None
+                request = context.get('request') if context else None
+                logger.exception(
+                        "Unhandled exception in %s (%s %s)",
+                        view.__class__.__name__ if view else 'unknown view',
+                        getattr(request,'method','?'),
+                        getattr(request,'path','?'),
+                        exc_info=exc,
+                )
 
                 return Response({
 

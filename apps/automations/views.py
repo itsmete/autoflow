@@ -20,7 +20,7 @@ class WebhookAutomationView(APIView):
                 automation = request.auth.automation
                 payload = request.data
 
-                run_automation.delay(automation.id, payload)
+                run_automation.delay(str(automation.id), payload)
 
                 return Response(
                         data= {"message":_("Automation Triggered")},
@@ -49,7 +49,7 @@ class ManualTriggeredAutomationView(RoleBasedAccessMixin,APIView):
                 
                 data = request.data if request.data else trigger.initial_data 
 
-                run_automation.delay(automation.id,data)
+                run_automation.delay(str(automation.id),data)
 
                 return Response(
                         {

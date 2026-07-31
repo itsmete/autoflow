@@ -29,7 +29,10 @@ class AutomationOrchestrator:
                                 return False
 
 
-                        conditions = automation.automationcondition_set.all()  
+                        # AutomationCondition declares related_name='conditions', so the
+                        # default automationcondition_set accessor does not exist and
+                        # raised AttributeError on every run.
+                        conditions = automation.conditions.all()
                         
                         if not ( ConditionEvaluator().evaluate_conditions(conditions,data)):
                                 logger.info("Automation conditions are not satisfied, exiting")
@@ -44,7 +47,7 @@ class AutomationOrchestrator:
                         logger.info("All conditions are satisfied,moving to the next stage")
 
                         # ordered actions
-                        actions = automation.automationaction_set.order_by('order')
+                        actions = automation.actions.order_by('order')
 
                         result = AutomationExecutor().execute_actions(actions,data)
 
@@ -87,7 +90,10 @@ class AutomationOrchestrator:
                                         execution_context = data,
                         )
                 
-                except Exception as e:
-                        logger.error("An unexpexted error happened",str(e))
+                except Exception:
+                        # logger.error(msg, arg) treats arg as a %-format parameter; with
+                        # no placeholder in the message this failed inside logging itself
+                        # and swallowed the very error it was meant to report.
+                        logger.exception("An unexpected error happened")
 
                         

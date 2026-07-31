@@ -170,7 +170,7 @@ class AutomationWriteSerializer(serializers.ModelSerializer):
                 if not user.is_super_admin and not data.get('tenant'):
                         raise serializers.ValidationError(_("Tenant field is required"))
 
-                if (user.is_branch_manager or user.is_staff) and not data.get('branch'):
+                if (user.is_branch_manager or user.is_staff_role) and not data.get('branch'):
                         raise serializers.ValidationError(_("Branch field is required for your role"))
 
                 allowed, msg = check_tenant_access(user, data.get('tenant'), data.get('branch'))

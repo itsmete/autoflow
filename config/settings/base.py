@@ -90,7 +90,7 @@ DATABASES = {
                 'USER' : env('DB_USER',default='postgres'),
                 'PASSWORD' : env('DB_PASSWORD',default=''),
                 'HOST' : env('DB_HOST', default='localhost'),
-                'POST' : env('DB_PORT', parse_default='5432'),
+                'PORT' : env('DB_PORT', default='5432'),
                 'OPTIONS' : {
                         # If db connection is down, reverse transaction
                         'connect_timeout' : 10,
@@ -202,10 +202,14 @@ REDIS_URL = env('REDIS_URL',default='redis://localhost:6379/0')
 
 
 # redis broker - task manager
-CELERY_BORKER_URL = env('REDIS_URL',default='redis://localhost:6379/0')
+# The name matters: celery only picks up settings under the CELERY_ namespace it
+# knows about. A typo here does not raise, it silently falls back to amqp://.
+CELERY_BROKER_URL = env('REDIS_URL',default='redis://localhost:6379/0')
 
 
-CELERY_RESULT_BACKEND = 'django_db'
+# django-celery-results registers itself as 'django-db' (hyphen). With an underscore
+# celery treats it as a module path and blows up with ModuleNotFoundError on .delay()
+CELERY_RESULT_BACKEND = 'django-db'
 
 CELERY_TIMEZONE = 'Europe/Istanbul'
 

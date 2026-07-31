@@ -8,7 +8,8 @@ ROLE_WEIGHTS = {
 }
 
 def get_weight(role: str) -> int:
-	return ROLE_WEIGHTS.get(role, default = 0)
+	# dict.get() takes its fallback positionally; `default=` raises TypeError.
+	return ROLE_WEIGHTS.get(role, 0)
 
 def can_manage(actor_role: str, target_role: str) -> bool:
 	return get_weight(actor_role) > get_weight(target_role)

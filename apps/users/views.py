@@ -181,7 +181,14 @@ class UserSelfUpdateView(APIView):
         def put(self,request):
                 user = request.user
 
-                serializer = UserSelfUpdateSerializer(instance = user , data = request.data)
+                # validate() reads self.context['request'] to check the current
+                # password; without the context it dereferenced None and raised
+                # AttributeError on every otherwise-valid password change.
+                serializer = UserSelfUpdateSerializer(
+                        instance = user,
+                        data = request.data,
+                        context = {'request':request}
+                )
                 serializer.is_valid(raise_exception=True)
 
                 serializer.save()

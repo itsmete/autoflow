@@ -3,13 +3,12 @@ from rest_framework.test import APIClient
 from rest_framework import status
 from apps.users.models import User
 from apps.tenants.models import Tenant, Branch
-from unittest.mock import patch
-import json
-import uuid
+from tests.utils import CacheTestMixin
 
-class TenantAPIEndpointTests(TestCase):
-    
+class TenantAPIEndpointTests(CacheTestMixin, TestCase):
+
     def setUp(self):
+        super().setUp()
         self.client = APIClient()
         self.tenant = Tenant.objects.create(name="Test Tenant", slug="test-tenant")
         self.other_tenant = Tenant.objects.create(name="Other Tenant", slug="other-tenant")
@@ -27,21 +26,11 @@ class TenantAPIEndpointTests(TestCase):
             tenant=self.tenant, branch=self.branch
         )
 
-        patcher1 = patch('core.cache.service.CachingService.bulk_get', return_value=None)
-        patcher2 = patch('core.cache.service.CachingService.get', return_value=None)
-        patcher3 = patch('core.tasks.bulk_cache.delay')
-        patcher4 = patch('core.tasks.single_cache.delay')
-        
-        self.addCleanup(patcher1.stop)
-        self.addCleanup(patcher2.stop)
-        self.addCleanup(patcher3.stop)
-        self.addCleanup(patcher4.stop)
-        
-        self.mock_bulk_get = patcher1.start()
-        self.mock_get = patcher2.start()
-        self.mock_bulk_delay = patcher3.start()
-        self.mock_single_delay = patcher4.start()
-        
+        # The cache is NOT mocked out any more - CacheTestMixin installs a real
+        # CachingService over fakeredis. These endpoints used to pass with the cache
+        # stubbed to None, which is precisely how a broken CELERY_RESULT_BACKEND and
+        # an index-set write that never happened both went unnoticed.
+
     def test_super_admin_can_list_tenants(self):
         self.client.force_authenticate(user=self.super_admin)
         response = self.client.get('/api/v1/tenants/tenants/')

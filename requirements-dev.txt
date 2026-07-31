@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# Runs redis lua scripts for real (via lupa) instead of mocking them out.
+# tests/test_cache_lua.py depends on this; a mocked redis accepts any command and
+# therefore cannot catch a broken script - which is how single_set.lua shipped
+# without ever writing an index while every test stayed green.
+fakeredis[lua]==2.26.2

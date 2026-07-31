@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch"],
+    "deny": ["Bash(rm -rf /*)", "Bash(rm -rf ~*)", "Bash(sudo *)", "Read(.env)", "Read(**/.ssh/**)"]
+  }
+}

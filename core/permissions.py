@@ -87,7 +87,7 @@ def check_tenant_access(user,tenant_id,branch_id=None):
         if user.is_owner:
                 return (True,None)
         
-        if user.is_branch_manager or user.is_staff:
+        if user.is_branch_manager or user.is_staff_role:
                 if (str(user.branch.id) != str(branch_id)):
                         return (False,_("You can't access that branch "))
 
