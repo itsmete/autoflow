@@ -13,8 +13,8 @@ class TenantSerializer(serializers.ModelSerializer):
 class BranchSerializer(serializers.ModelSerializer):
         class Meta:
                 model = Branch
-                fields = ['id','name','address','phone','is_hq','created_at']
-                read_only_fields = ['id','created_at']
+                fields = ['id','name','address','phone','is_hq','created_at','tenant']
+                read_only_fields = ['id','created_at','tenant']
 
 """
         Our branch serializer dont have a tenant field, which is super crucial.

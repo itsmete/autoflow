@@ -44,7 +44,7 @@ THIRD_PARTY_APPS = [
 
 #Modules that we wrote
 LOCAL_APPS = [
-        'core',
+        'core.apps.CoreConfig',
         'apps.tenants',
         'apps.channels',
         'apps.automations',
@@ -93,7 +93,7 @@ DATABASES = {
                 'POST' : env('DB_PORT', parse_default='5432'),
                 'OPTIONS' : {
                         # If db connection is down, reverse transaction
-                        'connection_timeout' : 10,
+                        'connect_timeout' : 10,
                 },
 
                 'CONN_MAX_AGE' : 60,
@@ -103,7 +103,7 @@ DATABASES = {
 }
 
 
-
+SCRIPTS_DIR = BASE_DIR / 'core' / 'cache' / 'scripts'
 
 REST_FRAMEWORK = {
 
@@ -197,6 +197,8 @@ TEMPLATES = [
         },
 ]
 
+
+REDIS_URL = env('REDIS_URL',default='redis://localhost:6379/0')
 
 
 # redis broker - task manager

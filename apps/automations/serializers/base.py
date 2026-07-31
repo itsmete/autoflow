@@ -6,13 +6,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
-
-class BaseConfigSerializer(serializers.Serializer):
-        
-        CONFIG_SCHEMA = {}
-        
-        def _validate_schema(self,schema,data):
+def validate_schema(schema,data):
                 
                 
 
@@ -58,13 +52,17 @@ class BaseConfigSerializer(serializers.Serializer):
                         
 
                         if v.get('type') == 'dict' and v.get('fields'):
-                                self._validate_schema(v['fields'], field_value)
+                                validate_schema(v['fields'], field_value)
 
-                unknown_keys = set(data.keys() - set(self.CONFIG_SCHEMA.keys()))
+                unknown_keys = set(data.keys() - set(schema.keys()))
                 if unknown_keys:        
                         logger.info(f"[WARN] An unsupported field type(s) ({unknown_keys}) provided in serializer, will be ignored.")
 
                 return data
 
+class BaseConfigSerializer(serializers.Serializer):
+        
+        CONFIG_SCHEMA = {}
+            
         def validate_config(self,value):
-                return self._validate_schema(self.CONFIG_SCHEMA,value)
+                return validate_schema(self.CONFIG_SCHEMA,value)

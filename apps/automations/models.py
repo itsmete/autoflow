@@ -1,6 +1,7 @@
 from django.db import models
 from core.models import BaseModel
 import secrets
+from apps.channels.models import ChannelTypes
 """
 
 Automation FLow : Trigger -> Condition -> Action 
@@ -154,3 +155,18 @@ class AutomationLog(BaseModel):
         execution_context = models.JSONField()
 
 
+
+class Template(BaseModel):
+
+        name = models.CharField(max_length=128)
+
+        raw_text = models.TextField(max_length=4096)
+
+        fields = models.JSONField()
+
+        version = models.PositiveIntegerField(default=1)
+
+        tenant = models.ForeignKey('tenants.Tenant' ,on_delete=models.CASCADE)
+        branch = models.ForeignKey('tenants.Branch', null=True, blank=True,on_delete=models.SET_NULL)
+        
+        channel_type = models.CharField(choices=ChannelTypes)

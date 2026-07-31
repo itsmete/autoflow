@@ -3,12 +3,12 @@ from .authentication import TriggerSecretKeyAuthentication
 from .tasks import run_automation
 from django.utils.translation import gettext_lazy as _
 from django.shortcuts import get_object_or_404
-from .models import Automation,TriggerType,AutomationTrigger
+from .models import Automation,TriggerType,AutomationTrigger,Template
 from rest_framework.exceptions import NotFound,PermissionDenied
 from core.mixins import RoleBasedAccessMixin
 from .serializers.automations import AutomationReadSerializer,\
         AutomationWriteSerializer
-
+from .serializers.templates import TemplateReadSerializer,TemplateWriteSerializer
 
 
 
@@ -62,19 +62,19 @@ class ManualTriggeredAutomationView(RoleBasedAccessMixin,APIView):
 class AutomationListCreateView(RoleBasedAccessMixin,APIView):
         
         model  = Automation
+        list_serializer = AutomationReadSerializer
 
         def get(self,request):
 
-                qs = self.get_queryset(request.user).filter(
-                        allowed_roles__contains = [request.user.role]
-                )
+                serialized = self.get_cached_queryset(request.user)
         
-
-
-                serializer = AutomationReadSerializer(qs,many=True)
-
+                filtered = [
+                        item for item in serialized 
+                        if request.user.role in item.get('allowed_roles', [])
+                ]
+                
                 return Response(
-                        data = serializer.data,
+                        data = filtered,
                         status = status.HTTP_200_OK
                 )
         
@@ -100,20 +100,22 @@ class AutomationListCreateView(RoleBasedAccessMixin,APIView):
 # automations/ [GET,PUT,DELETE]
 class AutomationDetailView(RoleBasedAccessMixin,APIView):
         model  = Automation
+        detail_serializer = AutomationReadSerializer
 
         def _check_allowed_roles(self, user, automation):
-                if user.role not in automation.allowed_roles:
+                roles = automation.get('allowed_roles', []) if isinstance(automation, dict) else getattr(automation, 'allowed_roles', [])
+                if user.role not in roles:
                         raise PermissionDenied(
                                 _("You are not permitted to perform this")
                         )
         def get(self,request,pk):
-                automation = self.get_object(request.user ,pk)
-                self._check_allowed_roles(request.user , automation)
+                serialized = self.get_cached_object(request.user ,pk)
+                self._check_allowed_roles(request.user , serialized)
 
-                serializer = AutomationReadSerializer(automation)
+                
 
                 return Response(
-                        data = serializer.data,
+                        data = serialized,
                         status= status.HTTP_200_OK
                 )
 
@@ -147,3 +149,82 @@ class AutomationDetailView(RoleBasedAccessMixin,APIView):
                 return Response(
                         status=status.HTTP_204_NO_CONTENT
                 )                
+
+# automations/templates/
+class TemplateListCreateView(RoleBasedAccessMixin,APIView):
+
+        model = Template
+        allowed_roles_for_list = ['super_admin','owner','branch_manager'] 
+        
+        list_serializer = TemplateReadSerializer
+        
+        def get(self,request):
+                serialized = self.get_cached_queryset(request.user)
+
+                return Response(
+                        data = serialized,
+                        status = status.HTTP_200_OK
+                )        
+
+
+        def post(self,request):
+                serializer = TemplateWriteSerializer(
+                        data = request.data,
+                        context = {'request': request}
+                )
+
+                serializer.is_valid(raise_exception=True)
+
+                obj = serializer.save()
+
+                return Response(
+                        data = TemplateReadSerializer(obj).data,
+                        status=status.HTTP_201_CREATED
+                )
+
+
+
+
+# automation/templates/<uuid:pk>/
+class TemplateDetailView(RoleBasedAccessMixin,APIView):
+
+        model = Template
+        allowed_roles = ['super_admin','owner','branch_manager']
+        detail_serializer = TemplateReadSerializer
+
+        def get(self,request,pk):
+                serialized = self.get_cached_object(request.user,pk)
+                
+
+                return Response(
+                        data = serialized,
+                        status = status.HTTP_200_OK
+                )
+
+        def put(self,request,pk):
+                instance = self.get_object(request.user,pk)
+
+                serializer = TemplateWriteSerializer(
+                        instance = instance,
+                        data = request.data,
+                        context = {'request' : request}
+                )
+
+                serializer.is_valid(raise_exception=True)
+
+                obj = serializer.save()
+
+                return Response(
+                        data = TemplateReadSerializer(obj).data,
+                        status=status.HTTP_200_OK
+                )
+        
+
+
+        def delete(self,request,pk):
+                
+                obj = self.get_object(request.user,pk)
+                
+               
+                obj.delete()
+                return Response(status =status.HTTP_204_NO_CONTENT)

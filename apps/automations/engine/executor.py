@@ -1,26 +1,26 @@
-from ..models import AutomationAction,AutomationLog,OnFailureChoices
+from ..models import AutomationAction,OnFailureChoices
 from .exceptions import ExecutionError
 from .actions import get_action_class
 
 class AutomationExecutor:
 
-        def _execute_single(self,action : AutomationAction):
+        def _execute_single(self,action : AutomationAction,data):
                 
                 
                 action_cls = get_action_class(action.action_type)
-                status = action_cls().execute(action.config)
+                status = action_cls(action).run(data)
                
                 return status
 
 
-        def execute_actions(self,actions:AutomationAction):
+        def execute_actions(self,actions:AutomationAction,data):
                 if not actions:
                         raise ExecutionError("No action is found")
 
                 
                 for action in actions:
                         try:
-                                status = self._execute_single(action)
+                                status = self._execute_single(action,data)
                         except ExecutionError as e:
                                 if action.on_failure == OnFailureChoices.RETRY:
                                         max_retries = 3
@@ -28,7 +28,7 @@ class AutomationExecutor:
                                         status_retry = False
                                         while (i < 3):
                                                 try:
-                                                        status_retry = self._execute_single(action)
+                                                        status_retry = self._execute_single(action,data)
                                                         if status_retry:
                                                                 break
                                                 

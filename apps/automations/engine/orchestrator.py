@@ -1,6 +1,4 @@
-from ..models import Automation,AutomationAction,AutomationCondition,\
-AutomationLog,AutomationTrigger,OnFailureChoices,AutomationStatus
-
+from ..models import Automation,AutomationLog,AutomationStatus
 from .exceptions import EvaluationError,ExecutionError
 from .evaluator import ConditionEvaluator
 from .executor import AutomationExecutor
@@ -48,7 +46,7 @@ class AutomationOrchestrator:
                         # ordered actions
                         actions = automation.automationaction_set.order_by('order')
 
-                        result = AutomationExecutor().execute_actions(actions)
+                        result = AutomationExecutor().execute_actions(actions,data)
 
                         if result :
                                 logger.info("Automation has completed succesfully")
