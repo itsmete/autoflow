@@ -103,6 +103,12 @@ class AutomationTrigger(BaseModel):
 
         initial_data = models.JSONField(null=True)
 
+        # How many times beat has fired this trigger. Only a 'scheduled' trigger of
+        # type 'n' reads it, to know when its repeat budget is spent - config['count']
+        # was validated and then never compared against anything, so 'n' behaved
+        # exactly like 'forever'. Runs started manually or by webhook do not count.
+        run_count = models.PositiveIntegerField(default=0)
+
         #Model save() is overrided (instead of serializer), since the creation of secret key
         # is a model level rule, that should be in models
         # Serializers are in API level, whoever do not use API , API rules are neglected

@@ -141,7 +141,19 @@ REST_FRAMEWORK = {
         # consistent format for error handling
         'EXCEPTION_HANDLER' : 'core.exceptions.extended_exception_handler',
 
+        # Only the webhook endpoint is throttled for now - it is the only one an
+        # anonymous caller can reach. Generous on purpose: this bounds abuse, it is
+        # not a quota.
+        'DEFAULT_THROTTLE_RATES' : {
+                'webhook' : env('AUTOFLOW_WEBHOOK_RATE',default='120/min'),
+        },
+
 }
+
+
+# How far a signed webhook's timestamp may sit from now, in seconds. Bounds the
+# replay window; see apps/automations/authentication.py.
+AUTOFLOW_WEBHOOK_REPLAY_WINDOW = env.int('AUTOFLOW_WEBHOOK_REPLAY_WINDOW',default=300)
 
 
 

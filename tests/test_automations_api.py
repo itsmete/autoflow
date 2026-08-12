@@ -5,11 +5,18 @@ points (webhook and manual).
 Access here is two-layered: the tenant/branch scope from RoleBasedAccessMixin, plus
 the per-automation `allowed_roles` list. Both are asserted.
 """
+import json
+import time
+import uuid
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient
+from rest_framework.throttling import ScopedRateThrottle
+
+from apps.automations.authentication import compute_signature
 
 from apps.automations.models import (
     Automation,
@@ -326,9 +333,14 @@ class ManualTriggerTests(CacheTestMixin, TestCase):
 
 
 class WebhookTriggerTests(TestCase):
+    """The legacy shared-secret scheme. Kept working; see WebhookSignatureTests for
+    the one that actually protects the body."""
 
     def setUp(self):
         self.client = APIClient()
+        # The endpoint is throttled, and DRF keeps throttle history in the default
+        # cache, which outlives a single test.
+        cache.clear()
         self.tenant = factories.make_tenant()
         self.automation = factories.make_automation(self.tenant)
         self.trigger = factories.make_trigger(
@@ -391,6 +403,133 @@ class WebhookTriggerTests(TestCase):
             response.status_code,
             (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
         )
+
+
+class WebhookSignatureTests(TestCase):
+    """
+    The signed scheme: the secret never travels, the body is covered by the HMAC,
+    and a captured request expires.
+
+    The legacy header proves only that the caller once saw the secret - it says
+    nothing about the body and a recording of it is replayable forever.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+        self.tenant = factories.make_tenant()
+        self.automation = factories.make_automation(self.tenant)
+        self.trigger = factories.make_trigger(
+            self.automation, trigger_type="webhook", config={}
+        )
+        self.secret = self.trigger.config["secret_key"]
+
+    def _post(self, body=None, secret=None, timestamp=None, trigger_id=None,
+              signature=None):
+        body = json.dumps({"order_id": 1}) if body is None else body
+        timestamp = int(time.time()) if timestamp is None else timestamp
+        if signature is None:
+            signature = compute_signature(secret or self.secret, timestamp, body)
+
+        return self.client.post(
+            '/api/v1/automations/webhook/',
+            data=body,
+            content_type='application/json',
+            headers={
+                "X-Webhook-Id": str(trigger_id or self.trigger.id),
+                "X-Webhook-Timestamp": str(timestamp),
+                "X-Webhook-Signature": signature,
+            },
+        )
+
+    def _assert_rejected(self, response):
+        self.assertIn(
+            response.status_code,
+            (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
+        )
+
+    @patch("apps.automations.views.run_automation.delay")
+    def test_a_valid_signature_fires_the_automation(self, mock_delay):
+        response = self._post()
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        mock_delay.assert_called_once()
+
+    @patch("apps.automations.views.run_automation.delay")
+    def test_the_payload_still_reaches_the_task(self, mock_delay):
+        self._post(body=json.dumps({"order_id": 42}))
+
+        _automation_id, payload = mock_delay.call_args[0]
+        self.assertEqual(payload, {"order_id": 42})
+
+    def test_a_tampered_body_is_rejected(self):
+        # The whole point of signing over the body rather than just proving
+        # knowledge of the secret.
+        signature = compute_signature(self.secret, int(time.time()), json.dumps({"order_id": 1}))
+        response = self._post(body=json.dumps({"order_id": 999}), signature=signature)
+
+        self._assert_rejected(response)
+
+    def test_a_signature_from_a_different_secret_is_rejected(self):
+        self._assert_rejected(self._post(secret="not-the-secret"))
+
+    def test_an_expired_timestamp_is_rejected(self):
+        old = int(time.time()) - 3600
+        self._assert_rejected(self._post(timestamp=old))
+
+    def test_a_timestamp_far_in_the_future_is_rejected(self):
+        ahead = int(time.time()) + 3600
+        self._assert_rejected(self._post(timestamp=ahead))
+
+    @patch("apps.automations.views.run_automation.delay")
+    def test_a_timestamp_inside_the_window_is_accepted(self, mock_delay):
+        recent = int(time.time()) - 30
+        self.assertEqual(self._post(timestamp=recent).status_code, status.HTTP_202_ACCEPTED)
+
+    def test_a_signature_cannot_be_moved_onto_a_fresh_timestamp(self):
+        # The timestamp is inside the signed message, so pairing an old signature
+        # with a new timestamp fails even though both are individually valid.
+        body = json.dumps({"order_id": 1})
+        stale = int(time.time()) - 60
+        signature = compute_signature(self.secret, stale, body)
+
+        response = self._post(body=body, timestamp=int(time.time()), signature=signature)
+        self._assert_rejected(response)
+
+    def test_a_missing_id_header_is_rejected(self):
+        response = self.client.post(
+            '/api/v1/automations/webhook/',
+            data=json.dumps({}),
+            content_type='application/json',
+            headers={
+                "X-Webhook-Timestamp": str(int(time.time())),
+                "X-Webhook-Signature": "sha256=whatever",
+            },
+        )
+        self._assert_rejected(response)
+
+    def test_a_malformed_trigger_id_is_a_rejection_not_a_crash(self):
+        self._assert_rejected(self._post(trigger_id="definitely-not-a-uuid"))
+
+    def test_a_non_webhook_trigger_id_is_rejected(self):
+        manual = factories.make_trigger(self.automation, trigger_type="manual", config={})
+        self._assert_rejected(self._post(trigger_id=manual.id))
+
+    def test_an_unknown_trigger_id_is_rejected(self):
+        self._assert_rejected(self._post(trigger_id=uuid.uuid4()))
+
+    # THROTTLE_RATES is a CLASS attribute bound to api_settings at import time, so
+    # override_settings(REST_FRAMEWORK=...) reaches api_settings and never reaches
+    # the throttle. Patching the attribute is the only override that works.
+    @patch.object(ScopedRateThrottle, "THROTTLE_RATES", {"webhook": "2/min"})
+    @patch("apps.automations.views.run_automation.delay")
+    def test_the_endpoint_is_throttled(self, mock_delay):
+        # Authentication rejects bad callers only after a database lookup, so an
+        # unthrottled public endpoint is a free way to make us do work.
+        self.assertEqual(self._post().status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(self._post().status_code, status.HTTP_202_ACCEPTED)
+
+        self.assertEqual(self._post().status_code, status.HTTP_429_TOO_MANY_REQUESTS)
 
 
 class TemplateAPITests(CacheTestMixin, TestCase):

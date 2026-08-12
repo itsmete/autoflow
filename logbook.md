@@ -8,6 +8,183 @@ başarısız oldukları**. Başarısız denemeleri yazmak, başarılı olanı ya
 değerli — aynı çıkmaza iki kez girmeyi engeller.
 
 Mimari, stil ve kalıcı kurallar burada değil → `CLAUDE.md`.
+İleriye dönük plan burada değil → `ROADMAP.md`.
+
+---
+
+## 2026-08-03 — Faz 0: zamanlayıcı onarımı ve webhook sertleştirmesi
+
+**Kim:** Claude (Opus 5) · **Branch:** `develop`
+**Durum:** 326 test geçiyor (285'ten), 1 beklenen başarısızlık (Faz 1 işareti).
+
+`ROADMAP.md` Faz 0'ın uygulaması. Yeni özellik yok — bugünkü motorun *iddia ettiği
+şeyi gerçekten yaptığını* kanıtlamak.
+
+### 1. Zamanlama mantığı `signals.py`'den çıkarıldı
+
+Yeni dosya: `apps/automations/scheduling.py`. Üç defektin üçü de bir sinyal
+handler'ının içindeydi ve bu, bir hatanın saklanabileceği en iyi yer: oraya ancak
+bir model kaydederek ulaşılıyor, dolayısıyla üçü de 285 testlik bir suite'ten sağ
+çıktı. Düz fonksiyon hâline gelince doğrudan test edilebiliyorlar.
+
+### 2. F0.1 — Cron alan sırası (canlı defekt)
+
+`signals.py:56` cron ifadesini `minute, hour, day_of_week, day_of_month,
+month_of_year` sırasıyla okuyordu. Standart cron — ve `croniter`'ın doğruladığı
+biçim — `minute hour day_of_month month day_of_week`. Son üç alan yanlış sütunlara
+yazılıyordu: `0 9 * * 1` (Pazartesi 09:00) `CrontabSchedule`'a **"her Ocak ayında,
+her gün 09:00"** olarak giriyordu. Hiçbir şey hata vermiyordu; otomasyon sadece
+yanlış zamanda çalışıyordu.
+
+**Neden testler görmedi:** tek zamanlama iddiası `"0 1 * * *"` kullanıyordu. Son üç
+alanın üçü de `*` olduğunda doğru eşleme ile karışık eşleme **aynı satırı üretir**.
+Testin girdisi ayrımı yapamıyorsa test bir şey kanıtlamıyor — `tests/test_scheduling.py`
+içindeki her ifade artık joker içermeyen, birbirinden farklı değerler taşıyor.
+
+### 3. F0.2 — `one_time` hiç ateşlenmiyordu (canlı defekt)
+
+Aynı fonksiyon `cron_expression` yoksa erken `return` ediyordu. `one_time` tanım
+gereği cron taşımaz. Sonuç: serializer kabul ediyor, satır yazılıyor, **hiçbir
+`PeriodicTask` yaratılmıyor**, otomasyon asla çalışmıyor. `ClockedSchedule` +
+`one_off=True` ile `start_time`'a bağlandı; naive datetime aware'e çevriliyor,
+geçmiş bir zaman uyarı logluyor.
+
+Bu, 2026-07-31'de düzeltilen `config['cron_expression']` KeyError'ının komşusu.
+O düzeltme çökmeyi durdurdu ama susturduğu şeyin *ne olduğuna* bakmadı. **Ders:
+bir erken `return` bir çökmeyi susturuyorsa, susturulanın ne olduğu araştırılmalı.**
+
+### 4. F0.3 — `n` tipi sayaç uygulanmıyordu
+
+`config['count']` serializer'da doğrulanıp başka hiçbir yerde okunmuyordu; `n`
+fiilen `forever` gibi davranıyordu. `AutomationTrigger.run_count` alanı eklendi
+(migration `0006`), `record_scheduled_run()` bütçe dolduğunda beat kaydını devre
+dışı bırakıyor.
+
+**Denenip vazgeçilen:** sayacı `PeriodicTask.total_run_count`'tan okumak. beat o
+alanı kendi cadence'ıyla (`sync_every`) flush eder, dolayısıyla dispatch'ten hemen
+sonra okuyan bir worker bayat değer görebilir. Sayımı gerçekten çalışan task'in
+içinde yapmak, sayının kesin doğru olduğu tek yer.
+
+**Test yazarken çıkan ikinci tasarım kusuru:** `run_count` kullanıcı tarafından
+düzenlenebilir bir satırda yaşıyor, dolayısıyla bayat bir `save()` sayacı eziyordu —
+ve ezip ezmemesi instance'ın taze olup olmamasına bağlıydı, yani **belirsizdi**.
+Belirsiz semantik iki seçenekten de kötü. Karar: **zamanlayıcıyı yeniden tanımlamak
+bütçeyi sıfırlar.** Gerekçe: `AutomationWriteSerializer.update()` zaten tüm
+trigger'ları silip yeniden yarattığı için API yolu bunu hâlihazırda yapıyor; ve
+alternatif "sayımı koru" değil, "instance'ın elinde ne kaldıysa onu koru" idi.
+
+### 5. F0.4 — Webhook sertleştirmesi
+
+Yeni imza şeması: `X-Webhook-Id` + `X-Webhook-Timestamp` + `X-Webhook-Signature`
+(HMAC-SHA256, `"<timestamp>.<ham gövde>"` üzerinden). Secret artık hatta çıkmıyor,
+gövde imza kapsamında, ve yakalanan istek `AUTOFLOW_WEBHOOK_REPLAY_WINDOW` (300s)
+sonrasında geçersiz. Zaman damgası imzalanan mesajın **içinde**, yani eski bir imza
+taze bir zaman damgasıyla eşleştirilemiyor. Karşılaştırma `hmac.compare_digest`.
+
+Eski `X-Webhook-Secret` yolu geriye dönük uyumluluk için duruyor ama gövde hakkında
+hiçbir şey kanıtlamıyor ve kaydı sonsuza dek tekrar edilebilir.
+
+Uca `ScopedRateThrottle` eklendi (varsayılan `120/min`) — kimlik doğrulama kötü
+çağıranı ancak bir DB sorgusundan *sonra* reddettiği için, throttle'sız bir genel uç
+bize bedava iş yaptırmanın yolu.
+
+**Testte çıkan iki tuzak:**
+- Bozuk UUID `django.core.exceptions.ValidationError` fırlatıyor, `ValueError`
+  değil. Yakalanmayınca kimlik doğrulaması olmayan bir uçta **500** oluyordu.
+- `SimpleRateThrottle.THROTTLE_RATES` bir **sınıf değişkeni**, import anında
+  `api_settings`'e bağlanıyor. `override_settings(REST_FRAMEWORK=...)` `api_settings`'e
+  ulaşıyor ama throttle'a asla ulaşmıyor — testte `patch.object(...,"THROTTLE_RATES",...)`
+  şart. (Üretimde sorun yok, ayar zaten import'ta okunuyor.)
+
+### 6. Motor saflık işareti — Faz 1'in hedefi koda yazıldı
+
+`tests/test_engine_purity.py`: `engine/` altında Django/DRF/Celery import'u ve
+`engine/` dışına tırmanan göreli import olmadığını AST ile doğruluyor. Bugün
+`@unittest.expectedFailure` — **10 gerçek ihlal** var. Faz 1 bunları kapattığında
+unittest "unexpected success" raporlar, bu da koşuyu **başarısız** eder ve dekoratörü
+silmeye zorlar. Kendini temizleyen bir işaret.
+
+Kural yeni değil, öznesi yeni: `CLAUDE.md` §4 zaten `core` için aynısını söylüyor.
+
+**Scanner'ın kendi hatası:** ilk sürüm `level >= 2`'yi ihlal sayıyordu.
+`engine/actions/base.py` bir paket daha derinde olduğu için oradaki
+`from ..exceptions import` `engine.exceptions`'a çözülüyor ve tamamen doğru. Seviyeyi
+derinliği saymadan saymak 3 yanlış pozitif üretiyordu — ve bir yanlış pozitif, Faz
+1'i olmayan bir sorunu "düzeltmeye" yönlendirirdi. `_escapes_engine()` artık modülün
+`engine/` altındaki derinliğini hesaba katıyor.
+
+### 7. Yapılamayanlar
+
+- **F0.5** gerçek Redis doğrulaması: `docker ps` izni yok (kullanıcı `docker`
+  grubunda değil). `./run_tests.sh --redis` hazır, koşulamadı.
+- **F0.6** `master` ← `develop`: yayın dalına birleştirme kullanıcı onayı bekliyor.
+
+---
+
+## 2026-08-03 — Genişleme araştırması ve yol haritası (`ROADMAP.md`)
+
+**Kim:** Claude (Opus 5) · **Branch:** `develop`
+**Durum:** Belge yazıldı. Kod değişikliği yok — bu bir plan, uygulama değil.
+
+Görev: "motor nasıl genişletilebilir, sektör ne sunuyor, ne eklenmeli, ve ikinci
+aşamada AI'ın tool calling ile otomasyon kurabilmesi için ne gerekir."
+
+### Ne yapıldı
+
+Üç kaynaktan besleniyor: (1) tüm engine/serializer/model katmanının okunması,
+(2) Zapier/Make/n8n + dayanıklı yürütme motorları (Temporal, Inngest, Restate)
+üzerine ~15 arama/fetch, (3) Türkiye'ye özgü uyum yüzeyi (İYS, KVKK, WhatsApp
+politikası).
+
+### Ana bulgu — neden AI önce yapılamaz
+
+AI'ın kurabileceği otomasyon, motorun ifade edebildiğiyle sınırlı. Bugünkü motora
+tool calling bağlarsak AI'a "doğrusal bildirim listesi" yazdırmış oluruz. Dahası
+`ai_eval`'in maliyeti kontrol edilemez, çünkü koşul motorunda **kısa devre yok** —
+LLM'li koşul, önündeki ucuz koşul zaten `False` dönmüşken de çağrılıyor.
+Bu yüzden AI, Faz 1 (motor derinliği) ve Faz 2 (dayanıklılık) üstüne oturtuldu;
+dört ayrı önkoşulun listesi `ROADMAP.md` §8'de.
+
+### Araştırma sırasında bulunan üç canlı defekt
+
+Bunlar plana değil, Faz 0'a yazıldı — düzeltilmediler, sadece tespit edildiler:
+
+1. **Cron alan sırası yanlış eşleniyor.** `apps/automations/signals.py:56`
+   `minute, hour, day_of_week, day_of_month, month_of_year` sırasıyla okuyor;
+   standart cron (ve `croniter`'ın doğruladığı biçim) `minute hour day_of_month
+   month day_of_week`. `0 9 * * 1` (Pazartesi 09:00), `CrontabSchedule`'a "her Ocak
+   ayında her gün 09:00" olarak giriyor.
+   **Neden testler yakalamadı:** hepsi `"0 1 * * *"` kullanıyor — 3., 4. ve 5. alan
+   üçü de `*`, dolayısıyla karışık sıra görünmüyor. Ders, §7'deki "mock'lanmış
+   Redis ile Lua test etmek" satırının aynısı: **testin girdisi ayrımı yapamıyorsa
+   test bir şey kanıtlamıyor.**
+2. **`one_time` zamanlama hiç ateşlenmiyor.** Aynı fonksiyon `cron_expression`
+   yoksa erken dönüyor; `one_time` tanım gereği cron taşımıyor → hiçbir
+   `PeriodicTask` yaratılmıyor. Serializer kabul ediyor, kayıt oluşuyor, otomasyon
+   asla çalışmıyor. Çözüm `ClockedSchedule` + `one_off=True`.
+3. **`schedule_type='n'` sayacı hiç uygulanmıyor.** `count` doğrulanıyor ama hiçbir
+   yerde azaltılmıyor; `n` fiilen `forever` gibi davranıyor.
+
+(1) ve (2) doğrudan 2026-07-31'de düzeltilen "`config['cron_expression']` KeyError"
+hatasının komşusu — o düzeltme çökmeyi durdurdu ama `one_time`'ın *sessizce hiç
+çalışmadığını* görmedi. Erken `return` bir çökmeyi susturduğunda, susturulan şeyin
+ne olduğuna bakmak gerekiyormuş.
+
+### Denenip vazgeçilenler
+
+- **Koşul motorunu tam ifade ağacına çevirmek.** `AutomationCondition` satır tabanlı;
+  ağaca geçmek tabloyu ve tüm serializer'ları yeniden yazmak demek. Yerine **ayrık
+  normal form** (`group_index`: grup içi AND, gruplar arası OR) seçildi — Zapier
+  Paths'in ifade gücü, tek alan eklemenin maliyeti. Üç seviye iç içe mantık
+  gerektiğinde doğru cevap zaten `branch` adımı, daha derin bir koşul ağacı değil.
+- **Şablon motorunu Jinja2'ye taşımak.** Şablon metni kiracıdan gelen güvenilmeyen
+  girdi; Jinja2'yi bununla beslemek SSTI yüzeyi açar. n8n'in JS ifadelerine izin
+  vermesinin bedeli de kalıcı bir sandbox problemi. Kendi sınırlı çözümleyicimiz
+  (nokta yolu + filtre, çalıştırılabilir kod yok) kararlaştırıldı.
+- **`AutomationAction`'ı koruyup dallanmayı `order` üzerine oturtmak.** Dal id'si +
+  sıra numarası kombinasyonunun her biçimi, er geç bir grafiği kötü kodluyor.
+  Grafiği açıkça modellemek (`AutomationStep` + `AutomationEdge`) birleştirmeyi ve
+  canvas'ı da bedavaya getiriyor.
 
 ---
 

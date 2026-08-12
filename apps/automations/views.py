@@ -1,4 +1,5 @@
 from rest_framework.views import APIView,Response,status
+from rest_framework.throttling import ScopedRateThrottle
 from .authentication import TriggerSecretKeyAuthentication
 from .tasks import run_automation
 from django.utils.translation import gettext_lazy as _
@@ -15,6 +16,13 @@ from .serializers.templates import TemplateReadSerializer,TemplateWriteSerialize
 class WebhookAutomationView(APIView):
         permission_classes = []
         authentication_classes = [TriggerSecretKeyAuthentication]
+
+        # The one endpoint anyone on the internet can reach. Authentication rejects
+        # bad callers but does so only after a database lookup, so an unthrottled
+        # endpoint is a free way to make us do work. Rate configured under
+        # REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['webhook'].
+        throttle_classes = [ScopedRateThrottle]
+        throttle_scope = 'webhook'
 
         def post(self,request):
                 automation = request.auth.automation

@@ -2,6 +2,8 @@
 
 Kalıcı proje rehberi. Her oturumda önce bunu oku. Zaman damgalı değişiklik geçmişi
 ve hata çözümleri için `logbook.md`'ye bak — bu dosya "ne olduğu", logbook "ne yaptığımız".
+İleriye dönük plan, sektör araştırması ve AI fazının mimarisi için `ROADMAP.md`
+— o da "ne yapacağımız".
 
 ---
 
@@ -114,6 +116,33 @@ Trigger ateşlenir
 Uzun süren veya dış API çağrısı yapan **her şey** Celery task'inde kalmalı;
 API sunucusunu bloklamak yasak.
 
+### 3.9 Zamanlama (`apps/automations/scheduling.py`)
+django-celery-beat ile konuşan **tek** yer burası. `signals.py` yalnızca çağırır.
+Ayrı durmasının sebebi tarihsel ve öğretici: üç zamanlama hatası da bir sinyal
+handler'ının içindeydi ve oraya ancak model kaydederek ulaşıldığı için 285 testlik
+bir suite'ten sağ çıktılar (§7).
+
+- `sync_periodic_task(trigger)` — `forever`/`n` → `CrontabSchedule`,
+  `one_time` → `ClockedSchedule` + `one_off`. Kullanılmayan schedule tipleri
+  **açıkça** `None`'lanır; `PeriodicTask` dördünden yalnızca birini taşıyabilir.
+- `record_scheduled_run(automation_id)` — `n` tipinin bütçesini harcar. Yalnızca
+  beat kaynaklı çalıştırmalar sayar (`kwargs={'source':'scheduled'}`).
+- **Zamanlayıcıyı yeniden tanımlamak bütçeyi sıfırlar.** Bilinçli: API yolu zaten
+  trigger'ları silip yeniden yaratıyor, ve alternatif "sayımı koru" değil,
+  "instance'ın elinde ne kaldıysa onu koru" olurdu.
+
+### 3.10 Webhook kimlik doğrulama (`apps/automations/authentication.py`)
+İki şema var, ikisi de aynı auth sınıfından geçer:
+
+| Şema | Header'lar | Ne kanıtlar |
+|---|---|---|
+| **İmza** (tercih edilen) | `X-Webhook-Id`, `X-Webhook-Timestamp`, `X-Webhook-Signature` | Secret hatta çıkmaz, gövde imza kapsamında, yakalanan istek `AUTOFLOW_WEBHOOK_REPLAY_WINDOW` (300s) sonra geçersiz |
+| **Paylaşılan secret** (legacy) | `X-Webhook-Secret` | Yalnızca "çağıran secret'ı bir kez görmüş". Gövde hakkında hiçbir şey, ve kaydı sonsuza dek tekrar edilebilir |
+
+İmza `HMAC-SHA256("<timestamp>.<ham gövde>")`. Zaman damgası imzalanan mesajın
+**içinde** — eski bir imza taze bir zaman damgasıyla eşleştirilemez. Yeni
+entegrasyonlarda imza şemasını kullan.
+
 ---
 
 ## 4. Kod Stili
@@ -149,7 +178,7 @@ Gövdede madde madde ne + neden. Eski `(feat:channels)` stili terk edildi.
 ## 5. Geliştirme Ortamı ve Testler
 
 ```bash
-./run_tests.sh                    # tüm suite (285 test) — venv'i gerekirse kendisi kurar
+./run_tests.sh                    # tüm suite (326 test) — venv'i gerekirse kendisi kurar
 ./run_tests.sh tests.test_core    # tek modül / sınıf / metot
 ./run_tests.sh --redis            # aynı suite, docker'da gerçek Redis'e karşı
 ```
@@ -189,7 +218,16 @@ python3 -m venv venv
 | `test_cache_lua.py` | **gerçek `.lua` dosyalarını çalıştırır** — Lua'ya dokunduysan bu yeşil kalmalı | 15 |
 | `test_cache_service.py` | `CachingService` çağrı imzaları (mock Redis — Lua'yı doğrulamaz) | 8 |
 | `test_cache_integration.py` | uçtan uca: gerçek view + signal + Lua, index zehirlenmesi ve invalidation | 15 |
+| `test_scheduling.py` | cron alan sırası, `one_time`/`ClockedSchedule`, `n` tipi bütçe, beat kaydı yaşam döngüsü | 22 |
+| `test_engine_purity.py` | `engine/`'in Django'dan bağımsızlığı — **Faz 1 işareti**, bkz. aşağıdaki not | 6 |
 | `test_api_endpoints.py` / `test_users_endpoints.py` | tenant ve kullanıcı uçları (mixin yolu) | 16 |
+
+**`test_engine_purity.py` hakkında:** içindeki bir test bilerek
+`@unittest.expectedFailure` işaretli. `engine/` bugün 10 yerde Django/DRF/Celery'ye
+bağlı ve Faz 1'in hedefi bunları kapatmak. Kapatıldığında unittest "unexpected
+success" raporlar, bu koşuyu **başarısız** eder ve dekoratörü silmeye zorlar —
+kendini temizleyen bir işaret. Kırmızıya döndüyse ya bir ihlal geri geldi ya da
+tam tersine iş bitti; ikisi de bakılmayı hak ediyor.
 
 **Yeni test yazarken:** fixture'ları `tests/factories.py`'den al; endpoint testinde
 cache'i mock'lama, `CacheTestMixin` kullan (mock'lamak BUG-02'yi aylarca gizledi).
@@ -262,6 +300,12 @@ sınıfta hatalar. Kök neden analizleri `logbook.md` → 2026-07-31.
 | `check_tenant_access(user, tenant_obj)` | Serializer'lar model instance geçer; `str(Tenant)` **adı** verir, UUID ile asla eşleşmez | Artık `_as_id()` normalleştiriyor — ama id geçmek yine de daha net |
 | Nested serializer çıktısını id sanmak | `AutomationReadSerializer.tenant` bir **dict**; cache'li detail yolunda 403 üretiyordu | `core/mixins._nested_id()` çözüyor; yeni nested alan eklersen kontrol et |
 | `provider_class = EmailProvider()` | `base.execute` `self.provider_class()` çağırıyor → instance çağrılmaya çalışılır | Registry'lerde **sınıf** tut, instance değil |
+| Cron alanlarını `CrontabSchedule`'ın sütun sırasıyla okumak | `0 9 * * 1` "her Ocak, her gün 09:00" oluyordu; hata vermiyor, sadece yanlış saatte çalışıyor | Standart cron `minute hour day_of_month month day_of_week`; `scheduling.CRON_FIELDS` tek kaynak |
+| Zamanlama testini `"0 1 * * *"` ile yazmak | Son üç alan `*` olduğunda doğru eşleme ile karışık eşleme **aynı satırı** üretir → test hiçbir şey kanıtlamaz | Zamanlama testlerinde her alan farklı ve jokersiz olsun |
+| Bir çökmeyi erken `return` ile susturmak | `cron_expression` yoksa dönülüyordu; `one_time` tanım gereği cron taşımaz → hiç `PeriodicTask` yaratılmadı, otomasyon sessizce hiç çalışmadı | Erken `return` bir çökmeyi susturuyorsa **neyi** susturduğunu araştır |
+| Motor durumunu kullanıcı düzenleyebilen satırda tutmak | Bayat bir `save()` `run_count`'u eziyordu — ve ezip ezmemesi instance'ın tazeliğine bağlıydı | Belirsiz semantik iki seçenekten de kötü: deterministik bir kural seç ve yaz |
+| `except (ValueError,TypeError)` ile bozuk UUID yakalamak | `UUIDField.to_python` Django'nun `ValidationError`'ını fırlatır → auth uçlarında 500 | `django.core.exceptions.ValidationError`'ı da yakala |
+| Throttle oranını `override_settings` ile değiştirmek | `SimpleRateThrottle.THROTTLE_RATES` **sınıf değişkeni**, import'ta bağlanır; override `api_settings`'e ulaşır, throttle'a ulaşmaz | Testte `patch.object(Throttle,"THROTTLE_RATES",{...})` |
 
 ### Bilerek bırakılanlar
 
@@ -295,7 +339,7 @@ sınıfta hatalar. Kök neden analizleri `logbook.md` → 2026-07-31.
    `tests/test_cache_lua.py` bunu zaten kontrol ediyor.
 4. **Signal/Celery'e dokunmadan önce** `core/signals.py` ve
    `apps/automations/signals.py`'yi oku.
-5. **Testleri çalıştır: `./run_tests.sh`** (285 test, hiçbir servis gerekmez).
+5. **Testleri çalıştır: `./run_tests.sh`** (326 test, hiçbir servis gerekmez).
    Cache/Lua'ya dokunduysan `./run_tests.sh --redis` ile gerçek Redis'e karşı da koştur.
 6. **Yeni davranış = yeni test.** Fixture'lar `tests/factories.py`'de; §5'teki
    haritadan hangi dosyaya ait olduğunu bul.
