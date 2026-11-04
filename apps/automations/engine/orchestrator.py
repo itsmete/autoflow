@@ -67,7 +67,7 @@ class AutomationOrchestrator:
                 return self._runtime
 
         def run(self,automation_id,data,start_step_key = None,schedule_continuation = None,
-                run_id = None,mode = 'live'):
+                run_id = None,mode = 'live',replay_of_id = None):
 
                 runtime = self.runtime
                 run = None
@@ -85,8 +85,13 @@ class AutomationOrchestrator:
                         # run_id this resumes that run and hands back what it already
                         # completed; without one it opens a new run. AutomationLog is
                         # still written below - it stays the API's summary.
+                        #
+                        # `mode` travels all the way down: a dry run must not have an
+                        # effect anywhere, and "anywhere" includes the fan-out at the
+                        # end of this method.
                         run,completed_steps = runtime.start_or_resume_run(
                                 automation,data,run_id = run_id,mode = mode,
+                                replay_of_id = replay_of_id,
                         )
 
                         if not automation.is_active:
@@ -98,6 +103,7 @@ class AutomationOrchestrator:
                                         # the back door.
                                         notify = False,
                                         run = run,
+                                        mode = mode,
                                 )
                                 return False
 
@@ -119,6 +125,7 @@ class AutomationOrchestrator:
                                         error_message = "Automation conditions are not satisfied",
                                         decision = decision.as_dict(),
                                         run = run,
+                                        mode = mode,
                                 )
                                 return False
 
@@ -135,6 +142,7 @@ class AutomationOrchestrator:
                                         runtime,automation,data,decision,start_step_key,
                                         schedule_continuation,run = run,
                                         completed_steps = completed_steps,
+                                        mode = mode,
                                 )
 
                         # ordered actions
@@ -143,6 +151,7 @@ class AutomationOrchestrator:
                         result = AutomationExecutor().execute_actions(
                                 actions,data,
                                 on_action_complete = self._step_recorder(runtime,run),
+                                mode = mode,
                         )
 
                         if result :
@@ -151,6 +160,7 @@ class AutomationOrchestrator:
                                         runtime,automation,STATUS_SUCCESS,data,
                                         decision = decision.as_dict(),
                                         run = run,
+                                        mode = mode,
                                 )
                                 return True
 
@@ -180,6 +190,7 @@ class AutomationOrchestrator:
                                 # rescued.
                                 decision = e.decision.as_dict() if e.decision is not None else None,
                                 run = run,
+                                mode = mode,
                         )
 
                 except ExecutionError as e:
@@ -192,6 +203,7 @@ class AutomationOrchestrator:
                                 runtime,automation,STATUS_FAILURE,data,
                                 error_message = str(e),
                                 run = run,
+                                mode = mode,
                         )
 
                 except Exception:
@@ -202,7 +214,7 @@ class AutomationOrchestrator:
 
 
         def _record(self,runtime,automation,status,execution_context,error_message = None,
-                        decision = None,notify = True,run = None):
+                        decision = None,notify = True,run = None,mode = 'live'):
                 """
                 Write the run's log and, for a finished run, tell the followers.
 
@@ -214,6 +226,11 @@ class AutomationOrchestrator:
                 `run` is the AutomationRun the log summarizes. It is finalized here for
                 the same reason: two statuses written on two exits is two chances to
                 disagree.
+
+                A dry run never fans out (`mode != 'test'` below): a test of automation
+                A must not start the LIVE automation B that follows it. That is the one
+                place where "no effect" costs something other than a provider call, and
+                it is the one that would actually hurt.
                 """
                 runtime.create_log(
                         automation = automation,
@@ -232,7 +249,8 @@ class AutomationOrchestrator:
                                 error_message = error_message or '',
                         )
 
-                if notify and status in TERMINAL_STATUSES and automation.is_active:
+                if notify and mode != 'test' and status in TERMINAL_STATUSES \
+                                and automation.is_active:
                         runtime.notify_automation_completed(automation,status,execution_context)
 
 
@@ -312,7 +330,7 @@ class AutomationOrchestrator:
 
 
         def _run_graph(self,runtime,automation,data,decision,start_step_key,schedule_continuation,
-                        run = None,completed_steps = None):
+                        run = None,completed_steps = None,mode = 'live'):
                 context = self._execution_context(automation,data,start_step_key)
 
                 result = AutomationExecutor().execute_graph(
@@ -327,6 +345,9 @@ class AutomationOrchestrator:
                         start_step_key = start_step_key,
                         completed_steps = completed_steps,
                         on_step_complete = self._step_recorder(runtime,run),
+                        # A dry run simulates waits instead of parking the run, so the
+                        # whole graph is walked in one pass and nothing is scheduled.
+                        mode = mode,
                 )
 
                 status = GRAPH_LOG_STATUS.get(result.status,STATUS_FAILURE)
@@ -359,6 +380,7 @@ class AutomationOrchestrator:
                         error_message = error_message,
                         decision = decision.as_dict(),
                         run = run,
+                        mode = mode,
                 )
 
                 # 'waiting' is not a failure: the run did everything it could and the

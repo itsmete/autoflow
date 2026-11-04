@@ -258,7 +258,7 @@ class AutomationExecutor:
                 return status
 
 
-        def execute_actions(self,actions,data,on_action_complete = None):
+        def execute_actions(self,actions,data,on_action_complete = None,mode = 'live'):
                 """
                 Run an ordered list of AutomationAction rows.
 
@@ -269,21 +269,31 @@ class AutomationExecutor:
                 method behaves exactly as it always has. It exists so a
                 `AutomationRun` can record one row per legacy action without the
                 orchestrator re-implementing the stop/continue/retry policies here.
+
+                `mode='test'` is a dry run (RunMode.TEST): the payload is marked with
+                `_mode` so no action class calls a provider or an HTTP endpoint, and
+                the step's output is what would have been sent.
                 """
                 if not actions:
                         raise ExecutionError("No action is found")
 
-                
+                # A copy, once: every action of the list sees the same marked payload,
+                # and the caller's dict is never mutated under it.
+                payload = data
+
+                if mode == 'test' and isinstance(data,Mapping):
+                        payload = dict(data,_mode = 'test')
+
                 for action in actions:
                         started = time.monotonic()
                         status = RESULT_SUCCESS
                         try:
-                                self._execute_single(action,data)
+                                self._execute_single(action,payload)
                         except ExecutionError:
                                 status = RESULT_FAILED
 
                                 if getattr(action,'on_failure',None) == ON_FAILURE_RETRY:
-                                        self._retry(action,data)
+                                        self._retry(action,payload)
                                         status = RESULT_SUCCESS
 
                                 elif getattr(action,'on_failure',None) == ON_FAILURE_STOP:
@@ -325,7 +335,8 @@ class AutomationExecutor:
 
         def execute_graph(self,steps,edges,context,*,evaluator = None,
                           schedule_continuation = None,start_step_key = None,
-                          completed_steps = None,on_step_complete = None):
+                          completed_steps = None,on_step_complete = None,
+                          mode = 'live'):
                 """
                 Walk the step graph once and return a GraphExecutionResult.
 
@@ -341,6 +352,11 @@ class AutomationExecutor:
                 the context and the walk continues past them. `on_step_complete` is
                 called for every step the walk finishes, memoized or live, so the
                 caller can persist one row per step.
+
+                `mode='test'` is a dry run (RunMode.TEST): `_mode` is put in the
+                context so every action can see it, and a `wait` step records how long
+                it would have waited instead of parking the run - which is what lets a
+                dry run walk the whole graph in one pass.
                 """
                 steps = list(steps or [])
                 edges = list(edges or [])
@@ -357,6 +373,11 @@ class AutomationExecutor:
                         context['steps'] = {}
                 if not isinstance(context.get('vars'),dict):
                         context['vars'] = {}
+
+                # How each action learns it must not have an effect. Popped again
+                # before returning: the context is persisted as the run's context, and
+                # a run's own context must not carry execution flags.
+                context['_mode'] = mode
 
                 # Copied because this is read repeatedly inside the walk and must not
                 # change under it if the caller keeps a reference.
@@ -632,6 +653,40 @@ class AutomationExecutor:
                                 started = time.monotonic()
                                 step_input = self._step_config(step)
 
+                                if context.get('_mode') == 'test':
+                                        # A dry run does not wait and does not hand the
+                                        # run to a Celery continuation (which would fan
+                                        # the rest of the graph out into a LIVE run
+                                        # minutes later). The config is still parsed,
+                                        # so an unusable duration is still an error,
+                                        # and the walk continues into the downstream
+                                        # steps - that is what makes "test" show the
+                                        # whole automation.
+                                        delay_seconds,_eta = parse_wait_duration(
+                                                step_input,context
+                                        )
+
+                                        context['steps'][key] = {
+                                                'status' : 'success',
+                                                'output' : {
+                                                        'would_wait_seconds' : delay_seconds,
+                                                        'simulated' : True,
+                                                },
+                                        }
+
+                                        step_result = self._record(
+                                                key,step_type,context,
+                                                duration_ms = self._elapsed_ms(started),
+                                                input = step_input,
+                                        )
+                                        step_results.append(step_result)
+
+                                        if on_step_complete is not None:
+                                                on_step_complete(step,step_result)
+
+                                        self._enqueue(queue,executed,outgoing)
+                                        continue
+
                                 delay_seconds,eta = parse_wait_duration(step_input,context)
 
                                 next_keys = [to_key for to_key,_edge in outgoing]
@@ -686,6 +741,9 @@ class AutomationExecutor:
                         status = RESULT_SKIPPED
                 else:
                         status = RESULT_SUCCESS
+
+                # Execution detail, not run state: the caller persists `context`.
+                context.pop('_mode',None)
 
                 return GraphExecutionResult(
                         status = status,

@@ -41,24 +41,30 @@ def _schedule_continuation(automation_id):
 
 
 @shared_task
-def run_automation(automation_id ,data ,source = 'manual' ,start_step_key = None ,run_id = None):
+def run_automation(automation_id ,data ,source = 'manual' ,start_step_key = None ,
+                run_id = None ,mode = 'live'):
 
         # `start_step_key` is only set by a wait step scheduling its own continuation.
         # `run_id` is set by the same continuation and by an explicit recovery of a
         # crashed run. The plain call stays plain, so no existing caller - or test
         # asserting on it - has to know that resumable runs exist.
+        #
+        # `mode` is set by a dry run (`RunMode.TEST`) and by a replay of one, and it
+        # defaults to 'live' so `run_automation(str(automation.id), payload)` - the
+        # call every existing caller and test makes - still means the same thing.
+        options = {
+                'schedule_continuation' : _schedule_continuation(automation_id),
+                'run_id' : run_id,
+                'mode' : mode,
+        }
+
         if start_step_key is None:
-                result = AutomationOrchestrator().run(
-                        automation_id,data,
-                        schedule_continuation = _schedule_continuation(automation_id),
-                        run_id = run_id,
-                )
+                result = AutomationOrchestrator().run(automation_id,data,**options)
         else:
                 result = AutomationOrchestrator().run(
                         automation_id,data,
                         start_step_key = start_step_key,
-                        schedule_continuation = _schedule_continuation(automation_id),
-                        run_id = run_id,
+                        **options
                 )
 
         # Only beat passes source='scheduled' (see scheduling.sync_periodic_task); a

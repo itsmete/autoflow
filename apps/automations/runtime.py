@@ -122,7 +122,7 @@ def completed_steps_from_run(run):
         return steps
 
 
-def start_or_resume_run(automation,data,*,run_id = None,mode = 'live'):
+def start_or_resume_run(automation,data,*,run_id = None,mode = 'live',replay_of_id = None):
         """
         The run this execution belongs to: the one it was asked to resume, or a new one.
 
@@ -130,6 +130,12 @@ def start_or_resume_run(automation,data,*,run_id = None,mode = 'live'):
         the orchestrator uses to take the graph path even for an automation that
         would otherwise run through the legacy action list - a half-done run can only
         be resumed step by step.
+
+        A resumed run keeps the `mode` and `replay_of` it was CREATED with. The caller
+        may pass a different mode (the endpoint creates the row before dispatching, and
+        a replay rebuilds the row from its source), but the row is the record of what
+        this attempt is: rewriting it here would let a live dispatch relabel a dry run
+        after the fact.
         """
         run = None
 
@@ -148,6 +154,7 @@ def start_or_resume_run(automation,data,*,run_id = None,mode = 'live'):
                 if run.started_at is None:
                         run.started_at = timezone.now()
 
+                # `mode` and `replay_of` are deliberately not in update_fields.
                 run.status = RunStatus.RUNNING
                 run.save(update_fields = ['status','started_at','updated_at'])
 
@@ -161,10 +168,58 @@ def start_or_resume_run(automation,data,*,run_id = None,mode = 'live'):
                 status = RunStatus.RUNNING,
                 mode = mode,
                 trigger_payload = dict(data) if isinstance(data,Mapping) else {},
+                replay_of = replay_source(automation,replay_of_id),
                 started_at = timezone.now(),
         )
 
         return run,{}
+
+
+def replay_source(automation,replay_of_id):
+        """
+        The run being replayed, if the caller named one this automation owns.
+
+        Filtered by automation for the same reason every other lookup is: a run id from
+        another tenant's automation must not become a foreign key here. An id that does
+        not resolve is `None` - the run is then simply not a replay, which is what the
+        caller would have got from a row that had been deleted.
+        """
+        if replay_of_id is None:
+                return None
+
+        try:
+                return AutomationRun.objects.filter(
+                        id = replay_of_id,automation = automation,
+                ).first()
+        except (TypeError,ValueError,ValidationError):
+                return None
+
+
+def create_replay_run(source_run,*,mode = None):
+        """
+        A fresh QUEUED run that repeats `source_run`'s payload.
+
+        `replay_of` and the copied `trigger_payload` are the whole contract: the new
+        attempt starts with an empty step history (nothing is memoized from the source,
+        otherwise a replay would be a no-op) but the same input the first attempt had.
+
+        The status is QUEUED, not RUNNING: the row exists before a worker picks it up,
+        which is what lets the API hand back an id the caller can then poll.
+        """
+        if mode not in RunMode.values:
+                mode = source_run.mode
+
+        payload = source_run.trigger_payload
+        if not isinstance(payload,Mapping):
+                payload = {}
+
+        return AutomationRun.objects.create(
+                automation = source_run.automation,
+                status = RunStatus.QUEUED,
+                mode = mode,
+                trigger_payload = dict(payload),
+                replay_of = source_run,
+        )
 
 
 def record_step_run(run,step,step_result):

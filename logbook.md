@@ -12,6 +12,91 @@ Mimari, stil ve kalıcı kurallar burada değil → `CLAUDE.md`.
 
 ---
 
+## 2026-11-05 — Faz 2.B + 2.C (T-202, T-203): koşu geçmişi API'si, dry-run ve replay
+
+**Kim:** OpenCode (worker) · **Branch:** `develop`
+**Durum:** 684 test yeşil, `engine/` hâlâ 0 framework import'u.
+
+### 1. `logs` artık otomasyon okumasında değil (T-202)
+
+`AutomationReadSerializer` her otomasyon okumasında `logs` alanını **tam listesiyle**
+gömüyordu — ve bu liste her koşuda büyüyordu. Alan kaldırıldı; aynı bilgi artık
+koşu bazında, sayfalı olarak servis ediliyor:
+
+| Uç | Ne döner |
+|---|---|
+| `GET automations/<pk>/runs/` | `AutomationRun` sayfalı liste (`?status=`, `?mode=`) |
+| `GET automations/runs/<run_id>/` | tek koşu |
+| `GET automations/runs/<run_id>/steps/` | `AutomationStepRun` sayfalı liste |
+
+`AutomationLogSerializer` modülde **bırakıldı** (başka importlar olabilir), sadece
+`AutomationReadSerializer`'dan çıkarıldı.
+
+### 2. Erişim: koşunun rolü yok, otomasyonun rolü var (T-202)
+
+`RunAccessMixin` iki katmanı tek yerde uygular: `RoleBasedAccessMixin.get_object`
+(tenant/branch kapsamı → 404/403) + `automation.allowed_roles` (`AutomationDetailView`
+ile birebir aynı). Koşu uçları `run.automation_id` üzerinden **otomasyona** gidip o
+kontrolden geçiriyor; aksi hâlde bir koşu satırı kendi başına "benim" diyebilirdi.
+Filtre parametreleri (`status`, `mode`) doğrulanıyor: sessizce yok sayılan bir typo,
+tüm geçmişi döndürüp çalışan bir filtre gibi görünürdü.
+
+### 3. Dry-run: `_mode` (T-203)
+
+`RunMode.TEST` zaten modelde vardı ama hiçbir şeyi değiştirmiyordu. Sözleşme artık şu:
+`execute_graph(..., mode='test')` bağlama `context['_mode'] = 'test'` koyuyor (dönüşten
+önce `pop` ediliyor — koşunun kalıcı `context`'ine yürütme bayrağı yazılmıyor), ve:
+
+- `BaseAction.execute`: `_mode == 'test'` ise **kanal varsa** `provider.simulate(...)`,
+  **kanal yoksa** `_execute_without_channel` **hiç çağrılmıyor**. İkisinde de
+  `_last_output = {'would_send': clean_prepared}`. Yani `webhook` ve `http_request`
+  gerçek istek atmıyor — test modunun tek anlamı bu.
+- `BaseProvider.simulate` varsayılanı `{'would_send': payload}`; `dispatch(creds,
+  payload, mode)` ikisini tek yerde ayırıyor. `simulate` **abstract değil**, mevcut
+  provider'lar değişmeden çalışsın diye.
+- `_mode` `CONTEXT_NAMESPACES`'e eklendi: adımın `output['prepared']`'ına sızmıyor.
+- `wait` adımı test modunda **durmuyor ve continuation planlamıyor**; config yine
+  parse ediliyor (bozuk bir `duration` hâlâ hata), çıktı
+  `{'would_wait_seconds': n, 'simulated': True}`, durum `success` ve **grafik aynı
+  geçişte devam ediyor**. Aksi hâlde bir dry-run, geri kalan otomasyonu dakikalar
+  sonra **canlı** bir Celery görevinde koştururdu.
+- `AutomationOrchestrator._record` fan-out'u `mode != 'test'` ile korur: A'nın testi,
+  arkasındaki **canlı** B'yi başlatmamalı. Bu, "yan etki yok"un paradan başka bir
+  maliyeti olan tek yeri.
+
+`POST automations/<pk>/test/` koşuyu **önce kendisi yaratıp** (`QUEUED`, `TEST`) sonra
+`run_id` ile orkestratöre veriyor. Sebep: "bu otomasyonun en yeni koşusu" demek iki
+eşzamanlı test arasında yarış olurdu; cevap, isteğin ürettiği satırı **adıyla**
+döndürmeli.
+
+### 4. Replay (T-203)
+
+`POST automations/runs/<run_id>/replay/` → `runtime.create_replay_run(source_run,
+mode=...)`: yeni satır `QUEUED`, `replay_of=source`, `trigger_payload` kopyası,
+**adım geçmişi boş**. Boş olması şart: kaynağın başarılı adımları memoize edilseydi
+replay hiçbir şey yapmayan bir koşu olurdu. `mode` gövdeden gelmezse kaynağınki
+kullanılıyor. `start_or_resume_run` artık `replay_of_id` alıyor ve **devam eden**
+koşuda `mode`/`replay_of`'a dokunmuyor (`update_fields`'a girmiyorlar): satır, o
+denemenin ne olduğunun kaydıdır; sonradan etiketlenmemeli.
+
+`run_automation` imzası `(automation_id, data, source='manual', start_step_key=None,
+run_id=None, mode='live')` oldu. `mode` **sona** eklendi ve varsayılanı `'live'`:
+`run_automation(str(id), payload)` çağrısı — mevcut tüm çağıranlar ve testler — aynı
+şeyi ifade etmeye devam ediyor; `source` da yerinde kaldı (beat `source='scheduled'`
+geçiyor).
+
+### 5. Testler
+
+`tests/test_runs_api.py`: 34 test — `logs`'un okumadan çıktığı, sayfalama/`?status=`/
+`?mode=` filtreleri, tenant + `allowed_roles` izolasyonu (koşu ve adım uçlarında),
+SMS/e-posta simülasyonu (`send` çağrılmıyor, `simulate` çağrılıyor), `http_request` ve
+`webhook`'un ağa çıkmadığı, `wait`'in simüle edilip **sonraki adımın aynı geçişte**
+koştuğu, `automation_completed` fan-out'unun test modunda **olmadığı** (ve canlıda
+hâlâ olduğu — yoksa test hiçbir şey kanıtlamazdı), replay'in yeni satır + `replay_of`
+ürettiği ve adımları **taze** çalıştırdığı.
+
+---
+
 ## 2026-11-05 — Faz 2.A (T-201): `AutomationRun` + `AutomationStepRun` ve adım memoizasyonu
 
 **Kim:** OpenCode (worker) · **Branch:** `develop`

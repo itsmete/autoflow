@@ -14,8 +14,12 @@ class BaseAction:
         # copied into `prepared` so an expression can reach them, but they are about
         # the RUN and not about the message: recording them in a step's output would
         # copy the whole run into every step, and the next step's output on top.
+        #
+        # `_mode` is here for the same reason, plus a smaller one: it is how the
+        # executor tells an action "this is a dry run" (RunMode.TEST), and a payload
+        # key named `_mode` must never appear in what a step reports it sent.
         CONTEXT_NAMESPACES = (
-                'trigger','steps','vars','automation','tenant','branch',
+                'trigger','steps','vars','automation','tenant','branch','_mode',
         )
 
 
@@ -76,7 +80,56 @@ class BaseAction:
         
 
         
+        def _clean_prepared(self,prepared):
+                """
+                `prepared` minus the namespaces that describe the RUN, not the message.
+
+                The same filter `run_with_output` applies to its output, lifted out so
+                a dry run reports exactly what a live run would have recorded.
+                """
+                return {
+                        key : value
+                        for key,value in prepared.items()
+                        if key not in self.CONTEXT_NAMESPACES
+                }
+
+
         def execute(self, prepared_data) -> bool:
+                # A dry run. The whole point of RunMode.TEST is that nothing leaves the
+                # building: no provider call, no HTTP request, no billed SMS. So the
+                # effect is simulated and what WOULD have been sent is kept as the
+                # step's output instead - `{{steps.1.output.would_send.body}}` is
+                # answerable in a test run.
+                is_test = isinstance(prepared_data,Mapping) and prepared_data.get('_mode') == 'test'
+
+                if is_test:
+                        clean = self._clean_prepared(prepared_data)
+
+                        if self.requires_channel:
+                                channel = self.action_model.channel
+                                if not channel:
+                                        # Still an error: a test run of an action that
+                                        # could never work is not a useful test.
+                                        raise ExecutionError(
+                                                "Channel is required for this action"
+                                        )
+
+                                simulated = self.provider_class().simulate(
+                                        channel.credentials,clean
+                                )
+
+                                self._last_output = simulated if isinstance(simulated,dict) \
+                                        else {'would_send' : clean}
+
+                                return True
+
+                        # A channel-less action (`webhook`, `http_request`) talks to the
+                        # network too. `_execute_without_channel` is deliberately NOT
+                        # called: that would fire the real request from a dry run.
+                        self._last_output = {'would_send' : clean}
+
+                        return True
+
                 if self.requires_channel:
                         channel = self.action_model.channel
                         if not channel:
@@ -136,11 +189,7 @@ class BaseAction:
                         'sent' : bool(ok),
                         'action_type' : getattr(self.action_model,'action_type',''),
                         'message' : prepared.get('message'),
-                        'prepared' : {
-                                key : value
-                                for key,value in prepared.items()
-                                if key not in self.CONTEXT_NAMESPACES
-                        },
+                        'prepared' : self._clean_prepared(prepared),
                 }
 
                 # The response of an action that produced one - `status_code`, `json`,

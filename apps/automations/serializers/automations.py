@@ -16,7 +16,8 @@ from .steps import (CHANNEL_REQUIRED_ACTIONS,AutomationEdgeReadSerializer,
 from rest_framework import serializers
 from django.utils.translation import gettext_lazy as _
 from ..models import Automation,AutomationCondition,\
-                AutomationAction,AutomationEdge,AutomationLog,AutomationStep,\
+                AutomationAction,AutomationEdge,AutomationLog,AutomationRun,\
+                AutomationStep,AutomationStepRun,\
                 AutomationTrigger,sync_actions_from_steps,sync_steps_from_actions
 
 from apps.tenants.serializers import TenantSerializer, BranchSerializer
@@ -143,7 +144,37 @@ class AutomationLogSerializer(serializers.ModelSerializer):
                 fields = ['status','triggered_at','error_message','execution_context','decision']
 
 
+class AutomationStepRunSerializer(serializers.ModelSerializer):
+        """
+        One row of `runs/<run_id>/steps/`.
 
+        Read-only in full: these rows are written by the executor, never by a client.
+        A writable history would let a caller claim a step succeeded.
+        """
+
+        class Meta:
+                model = AutomationStepRun
+                fields = ['id','run','step','step_key','step_type','status','attempt',
+                          'input','output','decision','error','duration_ms','created_at']
+                read_only_fields = fields
+
+
+class AutomationRunSerializer(serializers.ModelSerializer):
+        """
+        One execution of an automation (ROADMAP section 5.2).
+
+        `logs` used to be embedded in AutomationReadSerializer, which meant every read
+        of an automation carried its entire, unbounded history - and it grew on every
+        run. That history is served here instead, paginated, under
+        `automations/<id>/runs/`.
+        """
+
+        class Meta:
+                model = AutomationRun
+                fields = ['id','automation','status','mode','trigger_payload','context',
+                          'decision','error_message','idempotency_key','replay_of',
+                          'started_at','finished_at','created_at']
+                read_only_fields = fields
 
 
 class AutomationReadSerializer(serializers.ModelSerializer):
@@ -160,12 +191,14 @@ class AutomationReadSerializer(serializers.ModelSerializer):
         steps = AutomationStepReadSerializer(many = True,read_only = True)
         edges = AutomationEdgeReadSerializer(many = True,read_only = True)
 
-        logs = AutomationLogSerializer(many=True,read_only=True)
+        # `logs` is deliberately NOT here: it was an unbounded list on every read of
+        # every automation. The same information is paginated per run under
+        # `automations/<id>/runs/` (see AutomationRunSerializer).
 
 
         class Meta:
                 model = Automation
-                fields = ['name','allowed_roles','metadata','tenant','branch','triggers','conditions','actions','steps','edges','logs']
+                fields = ['name','allowed_roles','metadata','tenant','branch','triggers','conditions','actions','steps','edges']
 
 
 
