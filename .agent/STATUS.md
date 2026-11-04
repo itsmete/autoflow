@@ -1,30 +1,36 @@
 # AF - Current Status
 
-_Last updated: 2026-11-04_
+_Last updated: 2026-11-05_
 
 ## Where we are
-- **Faz 0** (scheduling fixes: cron field order, `one_time`/`ClockedSchedule`, `n`-budget tracking; webhook HMAC + replay window + throttling) is **DONE** (`0f296e7`).
-- **Faz 1.A** (rule engine v2: `engine/paths.py`, `operators.py` with 20 operators, `decision.py` trace, short-circuit DNF grouping, quantifiers, `on_missing` policy, `AutomationLog.decision`) is **DONE** in working tree (385 tests green, 1 expectedFailure on `test_engine_purity.py` with 9 remaining violations).
-- **Next:** Commit Faz 1.A + OpenCode setup (`T-100`), then execute **Faz 1.B (`AutomationStep` + `AutomationEdge` DAG)** (`T-101`, `T-102`), followed by Faz 1.C–1.E (`T-103`..`T-107`).
+- **Faz 0** (scheduling fixes + webhook HMAC/replay/throttle) is **DONE** (`0f296e7`).
+- **Faz 1** (Motor Derinliği — `ROADMAP.md` §7) is **100% DONE** (`34f2a56`..`fca930b`):
+  - **1.A**: Rule engine v2 (`paths.py`, `operators.py` with 20 operators, `decision.py` trace, short-circuit DNF grouping, quantifiers, `on_missing`).
+  - **1.B**: `AutomationStep` + `AutomationEdge` DAG models, migration `0009` converting legacy `AutomationAction` rows, step/edge serializers, DAG validation (cycles, reachability, branch keys), and bidirectional dual-write with `actions`.
+  - **1.C**: SSTI-safe expression engine (`engine/expressions.py`) + `ExecutionContext` (`trigger`, `steps`, `vars`, `automation`, `tenant`, `branch`, `now`), filters (`default`, `upper`, `lower`, `strip`, `title`, `length`, `currency`, `date`, `json`), and `TemplateManager` upgrade with optional `Template.fields`.
+  - **1.D**: DAG executor (`execute_graph`) supporting `action`, `filter`, `branch`, `set_variable`, and `wait` (with Celery continuation + resume from `start_step_key`).
+  - **1.E**: `http_request` action with response output capture (`status_code`, `json`, `text`, `headers`) + timeout bounds; `automation_completed` trigger with `MAX_CHAIN_DEPTH=5` guard; `field_changed` signal event with `pre_save` snapshot diffing.
+  - **1.F**: Complete `engine/` purity (**0 Django/DRF/Celery imports** inside `apps/automations/engine/`, `@expectedFailure` removed from `tests/test_engine_purity.py`) via `apps/automations/runtime.py` adapter.
+  - **Adversarial review fixes**: Cross-tenant validation on `channel`, `template`, and `source_automation_id`; negative `_chain_depth` clamping; `http_request` timeout clamping (1–60s).
+- **Test suite**: **636 tests passing, 0 failures, 0 expected failures**.
 
 ## Active branch
-- `develop` (30 commits ahead of `origin/develop`; `master` is still pre-merge at `8052eaf`).
+- `develop` (38 commits ahead of `origin/develop`; `master` is still pre-merge at `8052eaf`).
 
 ## Done
-- Caching layer repair + Lua test suite (`51ad3ba`)
-- Full system test suite + 21 bug fixes (`9c7d28b`)
-- Faz 0: Scheduler (`apps/automations/scheduling.py`) + Webhook HMAC auth (`0f296e7`)
-- Faz 1.A: Rule layer v2 (`paths.py`, `operators.py`, `decision.py`, `evaluator.py`, migrations `0007`–`0008`, 57 condition tests)
+- Faz 0 (`0f296e7`)
+- Faz 1 (`34f2a56`, `519fde5`, `84cd4e0`, `c9cef2d`, `9109d4a`, `18471b6`, `717cdc4`, `fca930b`)
 
 ## In progress
-- **T-100**: Commit uncommitted Faz 1.A + OpenCode setup changes on `develop`.
-- **T-101**: Faz 1.B — `AutomationStep` + `AutomationEdge` models & forward/backward data migration from `AutomationAction`.
-- **T-102**: Faz 1.B — Step/Edge serializers, DAG validation, and dual-write backward compatibility with `actions` API.
+- None (Faz 1 complete; ready to kick off Faz 2).
 
 ## Known problems / risks
-- **Graph migration risk (ROADMAP §7 Faz 1):** `AutomationAction` must remain readable and the legacy `actions` payload in `AutomationWriteSerializer` must dual-write to `AutomationStep` + `AutomationEdge` so existing clients and 385 tests do not break.
-- **Engine purity:** 9 Django/DRF/Celery imports remain inside `apps/automations/engine/` (tracked by `@unittest.expectedFailure` in `tests/test_engine_purity.py`). All new engine modules must be 100% pure Python.
-- **Real Redis run (`./run_tests.sh --redis`):** Still pending a machine with Docker permission (fakeredis+lupa covers Lua in CI/dev).
+- **Channel credentials in cached Automation read payload (Faz 3 / T7):** `ChannelReadSerializer` exposes `credentials`; masking/encryption is planned in Faz 3 (`EncryptedJSONField` + read redaction).
+- **Real Redis run (`./run_tests.sh --redis`):** Pending host Docker permission (`T-090`).
 
 ## Next step
-- Finish `T-100`, `T-101`, and `T-102` (Faz 1.B Step + Edge graph model, migration, and API serializers), then proceed to `T-103` (Faz 1.C Expression & ExecutionContext engine).
+- Start **Faz 2 — Dayanıklılık ve Gözlemlenebilirlik** (`ROADMAP.md` §5.2 & §7):
+  - `T-201`: `AutomationRun` + `AutomationStepRun` models & step memoization (`StepRun.status == 'success'` skipped on replay/retry).
+  - `T-202`: Paginated run history API (`automations/<id>/runs/`, `runs/<id>/steps/`) & removing unbounded `logs` from `AutomationReadSerializer`.
+  - `T-203`: Dry-run (`RunMode.TEST`) & Replay API.
+  - `T-204`: Webhook idempotency (`WebhookDelivery` dedup) & exponential backoff retry + `wait_for_event`.
