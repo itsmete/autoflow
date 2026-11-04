@@ -124,11 +124,12 @@ class EnginePurityTests(SimpleTestCase):
             )
 
     def test_the_violation_count_only_ever_falls(self):
-        # 9 violations after Faz 1.A, 7 after Faz 1.C. A ceiling cannot rot the way a
-        # fixed list does, and it still fails the moment somebody adds a new Django
-        # import to the engine.
+        # 9 violations after Faz 1.A, 7 after Faz 1.C, 5 after Faz 1.D (the action
+        # base lost its gettext import, the executor lost the models import). A
+        # ceiling cannot rot the way a fixed list does, and it still fails the moment
+        # somebody adds a new Django import to the engine.
         total = sum(len(find_framework_imports(module)) for module in engine_modules())
-        self.assertLessEqual(total, 7)
+        self.assertLessEqual(total, 5)
 
     @unittest.expectedFailure
     def test_the_engine_does_not_import_django(self):

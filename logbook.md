@@ -12,6 +12,129 @@ Mimari, stil ve kalıcı kurallar burada değil → `CLAUDE.md`.
 
 ---
 
+## 2026-11-05 — Faz 1.D: DAG yürütücüsü ve kontrol akışı adımları
+
+**Kim:** OpenCode (worker) · **Branch:** `develop`
+**Durum:** 599 test geçiyor (566'dan), 1 beklenen başarısızlık. Motor saflığı **7 → 5**.
+
+Görev T-104. `AutomationStep`/`AutomationEdge` (T-101) ve serializer'ları (T-102)
+yerinde duruyordu ama **hiçbir şey onları yürütmüyordu**: `AutomationOrchestrator`
+hâlâ `AutomationAction` listesini okuyordu. Bu giriş grafiği çalışır hâle getiriyor ve
+fazın çıkış kriterini (`ROADMAP.md` §7) tek otomasyonda ifade edilebilir kılıyor.
+
+### 1. Neden iki yürütücü aynı dosyada
+
+`execute_actions()` **donduruldu**. `actions` API'si Faz 1 boyunca sözleşme
+(§5.1 "geriye dönük uyumluluk sözleşmesi") ve 566 testin 30+'u ona dayanıyor. Yeni yol
+yanına eklendi; hangisinin çalışacağına orchestrator karar veriyor:
+
+> Grafik yalnızca **mecbur** olduğunda devralır: `start_step_key` verilmişse, bir adım
+> `action` dışında bir tipteyse, `branch_key`'li bir kenar varsa ya da hiç `AutomationAction`
+> satırı yoksa. Aksiyonlardan türetilmiş (T-102'deki) düz zincir eskisi gibi
+> `execute_actions()`'tan geçiyor — aksi hâlde her mevcut otomasyon için davranış
+> değişirdi, karşılığında hiçbir şey kazanmadan.
+
+`test_a_plain_action_chain_still_uses_the_legacy_executor` bunu sabitliyor.
+
+### 2. `engine/executor.py` — `execute_graph()`
+
+- **İş kuyruğu, özyineleme değil.** `deque` + `executed` kümesi: fan-out ve merge
+  (elmas) için özel durum yok, birleşen düğüm bir kez çalışıyor.
+- **Kenarlar önce çözülüyor.** Bir kenar step nesnesi, step `key`'i ya da `*_step_id`
+  taşıyabiliyor (ORM nesne verir, serializer anahtar, istemci id). `_index_edges()`
+  hepsini `(from_key, to_key)`'ye indiriyor, yürüyüş bir daha bakmıyor. Sıralama
+  `(order, created_at.timestamp())`; `created_at` `None` olabildiği için ham datetime
+  karşılaştırması `TypeError` verirdi — sadece çalıştırmanın ortasında.
+- **Adım çıktısı:** `context['steps'][key] = {'status', 'output', 'decision'?}`. Bir
+  sonraki adım `{{steps.1.output.message}}` ile okuyor. `run_with_output()` bunun için
+  var: `bool` "1. adım ne gönderdi" sorusunu cevaplayamaz.
+- **`filter`:** koşul sağlanmazsa o **yol** biter, koşu değil. Çıkış kenarları
+  kuyruğa girmez, `Decision` izi `decision` alanına yazılır ("neden hiçbir şey
+  gönderilmedi" sorusunun cevabı). Koşu durumu yalnızca ardından hiçbir aksiyon
+  başarılı olmadıysa `skipped` olur.
+- **`branch`:** ilk eşleşen dal kazanır, **yalnızca** `branch_key`'i seçilen anahtara
+  eşit kenarlar kuyruğa girer. Yedek sırası: `config['default']` → `default` adlı kenar
+  → `false` adlı kenar. Eşleşmeyen dallar "skipped adım" değil: hiç ulaşılmadı.
+- **`set_variable`:** değişkenler **sırayla** çözülüyor, böylece `{{vars.a}}` bir
+  sonrakinde okunabiliyor. `RESERVED_NAMESPACES` dışındaki adlar ayrıca üst seviyeye
+  yazılıyor (`vars.trigger = x` trigger ad alanını gölgeleyemez).
+- **`wait`:** uyumuyor. `parse_wait_duration()` `duration` (`"24h"`, `{"resolve_value"}`
+  ile) veya `until` (ISO-8601) okuyup `(delay, eta)` döndürüyor, adım `waiting` olarak
+  yazılıp `schedule_continuation(next_key, context, delay_seconds, eta)` çağrılıyor.
+  Devam eden adımlar **bu koşuda çalışmıyor**; koşu `status='waiting'` ve log
+  `pending` oluyor. Uyumak, worker'ı 24 saat meşgul tutmak demekti.
+- **Bilinmeyen adım tipi** (`loop`, `ai_*`, `mcp_call`) `ExecutionError` fırlatıyor.
+  Sessizce atlamak, etkisi uygulanmamış bir düğümü "başarılı" saymak olurdu.
+- `on_failure`: `stop` → kaydedip durur; `continue` → kaydedip devam eder;
+  `retry` → 3 deneme, tükenirse `ExecutionError` (eski `_retry` sözleşmesi).
+
+### 3. `engine/actions/base.py` — config ifadeleri ve çıktı
+
+- `prepare()` config'i `resolve_value(config, payload)` ile çözüyor. Bu olmadan bir
+  adım yalnızca kendi config'inin **düz metnini** gönderebiliyordu; adımlar arası veri
+  akışı tam olarak buna takılıydı.
+- `payload['trigger']` ayrıca **düzleştiriliyor**: grafik tam `ExecutionContext`
+  veriyor, sağlayıcılar ise `to`/`subject`/`body`/`message`'ı üst seviyeden okuyor.
+  Böylece aynı aksiyon eski yoldan da grafik adımından da aynı şekilde çalışıyor.
+- Şablon `message` üretiyor; `body` de yoksa/`None` ise `body`'ye de yazılıyor —
+  e-posta `body`, WhatsApp/SMS `message` okuyor, tek şablon ikisine de yetiyor.
+- `gettext_lazy` gitti: `ExecutionError` mesajları düz string. Eski
+  `_("...") % {...}` kalıbı `logger.error(msg, arg)` ile aynı sınıftandı — çeviri
+  yüklenmeden biçimlendirme yapmak.
+
+### 4. `engine/executor.py` — `..models` gitti
+
+`AutomationAction`, `ActionTypes`, `OnFailureChoices` import'u tek satırdı ve motora
+"Django'nun ne olduğunu biliyor" dedirtmek için yeterliydi. Yerine string sabitler
+(`ON_FAILURE_STOP`, `STEP_BRANCH`, ...) ve `getattr` ile duck-typed erişim. Motor artık
+`SimpleNamespace` ile de çalışır — testlerin bir kısmı tam olarak bunu yapıyor.
+
+### 5. Orkestratör: devralan zamanlayıcı, enjekte edilen
+
+`wait` adımı bir devam görevi **zamanlamak** zorunda, zamanlama ise Celery demek.
+Orkestratörün içinden `..tasks` import etmek saflık ihlalini 6'ya çıkarıyordu (hedef
+5'ti). Bu yüzden **bağımlılık yukarıdan enjekte ediliyor**: `run_automation` görevde
+`_schedule_continuation(automation_id)` üretip `run(..., schedule_continuation=...)`
+veriyor. Motorun Celery'den haberi yok, görev katmanı da tek yerde duruyor.
+
+**Sapma:** görev tanımı "çağrı biçimi birebir aynı kalsın" diyordu; ben
+`schedule_continuation` kwarg'ını her iki dalda da geçiyorum. Gerekçe: alternativa
+orkestratörün içinden `..tasks` import etmek ve saflık hedefini (7 → 5) kaçırmaktı.
+Bugün bu çağrı imzasına birebir bakan bir test yok; `start_step_key` `None` iken
+konumsal argümanlar değişmedi.
+
+Devam koşusu, duraklayan koşunun **tüm bağlamını** taşıyor (`steps`, `vars` dahil);
+`_execution_context()` bu yüzden yeniden inşa etmiyor — kendinden inşa etmek eski koşuyu
+`trigger`'ın içine gömerdi.
+
+### 6. Testler
+
+`tests/test_engine_graph.py` — 33 test: süre ayrıştırma (7), doğrusal grafik + adım
+çıktısı akışı (5), `set_variable` (3), `filter` (3), `branch` (4), `wait` ve devam (3),
+orkestratör yolu (4), ve fazın **çıkış kriteri** (2, aşağıda).
+
+**Çıkış kriteri testi** (VIP → WhatsApp → 24s bekle → `replied == False` filtresi →
+yöneticiye e-posta) koşuyu iki kez çalıştırıyor: ilki 24 saatlik beklemede `waiting`
+duruyor ve `apply_async(start_step_key='check_replied')` çağırıyor, ikincisi o bağlamla
+devam edip filtreyi değerlendiriyor ve e-postayı gönderiyor. WhatsApp'ın **ikinci kez**
+gönderilmediği, ilk koşunun kayıtlarının ikinci koşunun bağlamında durduğu ve taşınan
+bağlamın `json.dumps` edilebildiği (Celery `json` serializer) ayrıca doğrulanıyor.
+
+**Saflık:** `base.py` (`gettext_lazy`) ve `executor.py` (`..models`) temizlendi,
+`find_framework_imports()` 7 → 5. `test_engine_purity.py` tavanı 5'e indirildi.
+
+### 7. Riskler / açık kalanlar
+
+- Aynı otomasyonda **paralel** iki dal varsa, `branch` sonrası ikisi de aynı bağlamı
+  sırayla işliyor; eşzamanlılık yok (§5.1'de kararlaştırıldığı gibi). `wait` bir dala
+  girdiğinde diğer dal akmaya devam ediyor — bu bir karar, test edilmedi.
+- Duraklayan koşu `AutomationLog`'da `pending` kalıyor; süreç ölürse kimse farkında
+  olmuyor. Kalıcı çalıştırma durumu (`AutomationRun`, Faz 2) bunun asıl çözümü.
+- `loop`, `ai_*`, `mcp_call`, `run_automation`, `human_approval` adım tipleri bilerek
+  yürütülmüyor: `ExecutionError`. Modelde var olmaları "çalışıyorlar" demek değil.
+
+---
+
 ## 2026-11-04 — Faz 1.C: ifade motoru ve çalıştırma bağlamı
 
 **Kim:** OpenCode (worker) · **Branch:** `develop`
