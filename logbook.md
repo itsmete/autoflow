@@ -12,7 +12,100 @@ Mimari, stil ve kalıcı kurallar burada değil → `CLAUDE.md`.
 
 ---
 
-## 2026-11-04 — Faz 1.B: adım grafiği (`AutomationStep` + `AutomationEdge`)
+## 2026-11-04 — Faz 1.C: ifade motoru ve çalıştırma bağlamı
+
+**Kim:** OpenCode (worker) · **Branch:** `develop`
+**Durum:** 565 test geçiyor (472'den), 1 beklenen başarısızlık. Motor saflığı **9 → 7**.
+
+T-102 (`c9cef2d`) ayrıca commit'lendi: step/edge serializer'ları, DAG doğrulaması,
+`actions` çift yazması. Bu giriş onun üstüne gelen Faz 1.C'yi anlatıyor.
+
+### 1. Neden kendi çözümleyicimiz
+
+Şablon gövdesi, aksiyon `config`'i ve koşul `field`'ı — üçü de **kiracının yazdığı
+metin**, yani güvenilmeyen girdi. Jinja2'yi ya da `eval`'i bunlarla beslemek, sunucu
+tarafında şablon enjeksiyonu yüzeyi açmak demek (`ROADMAP.md` §5.4). İhtiyaç ise dar:
+nokta yolu + indeks + kapalı bir filtre listesi + `{%if%}`. `engine/expressions.py`
+tam olarak bu kadar, ve fazlası değil — dosya bir oturuşta okunabilsin diye kısa.
+
+### 2. `engine/expressions.py` (saf Python)
+
+- `build_execution_context()` — §4.5'teki sözlük. Trigger payload'ı hem `trigger`
+  altında hem üst seviyede: yeni yazım `{{trigger.customer.email}}`, ama mevcut her
+  şablon `{{customer.email}}` diyor ve o yazımı düşürmek hepsini birden bozardı.
+  `automation`/`tenant`/`branch` yalnızca `getattr` ile okunuyor — motor `Automation`
+  ya da `Tenant`'ın ne olduğunu bilmemeli (saflık testi).
+- `resolve_context_path()` — önce bağlamın tamamı, sonra (yalnızca ilk segment
+  `RESERVED_NAMESPACES`'ta değilse) çıplak payload. Rezerve kökler için geri düşme
+  **yok**: `{{automation.name}}` payload'daki bir anahtarı okuyamaz, yoksa kullanıcı
+  verisi çalıştırma meta verisini taklit edebilirdi.
+- Filtreler: `default`, `upper`, `lower`, `strip`, `title`, `length`, `currency`,
+  `date`, `json`. Metin filtreleri eksik değerde boş string döner (koşu ölmesin);
+  `currency` ve `date` **raise eder** — bozuk bir tutarı `0.00 TRY` diye göstermek
+  veri hatasını gizlerdi.
+- `date` hem `%Y-%m-%d` hem `YYYY-MM-DD` kabul ediyor; ikincisi insanların gerçekten
+  yazdığı şey. `Z` soneki `+00:00`'a çevriliyor (`fromisoformat` 3.11 öncesi onu
+  reddediyor).
+- `render_string()` — `{%if x%}` blokları önce (içerideki placeholder sonra normal
+  çözülüyor), sonra placeholder'lar. Blok iç içe geçmiyor ve bu sessizce bozulmuyor:
+  iç blok metin olarak kalıyor, göze görünüyor.
+- `resolve_value()` — tek başına duran `{{path}}` **değerdir**, tipini korur
+  (`int`, `list`, `bool`, `None`); etrafında metin varsa enterpolasyondur. Böylece
+  `{"count": "{{steps.1.output.count}}"}` sağlayıcıya sayı gider, string değil.
+
+**SSTI yüzeyi kapalı, çünkü dil yok.** Yol çözücü yalnızca sözlük anahtarı ve liste
+indeksi okuyor, `getattr` **hiç** çağırmıyor. Yani `{{ __class__.__mro__ }}` bir
+anahtar aramasıdır ve cevap `MISSING`; `{{ __import__('os') }}` bir çağrı değil, adı
+`__import__('os')` olan bir anahtardır. `{%if 1 == 1%}` de `True` olmaz: ifade dilinde
+operatör yok, o yüzden blok düşer. Testler bunları ayrı ayrı sabitliyor.
+
+### 3. `TemplateManager` — iki Django import'u gitti
+
+Tip ipucu için `Template` modeli, iki hata mesajı için `gettext_lazy` import
+ediliyordu; ikisi de kaldırıldı, dosya artık saflık testinde temiz (9 → 7).
+
+- `fetch()`: ilan edilmiş alan adları artık **nokta yolu** olabilir; iç içe arama
+  önce, düz anahtar sonra (gerçekten `a.b` adlı bir anahtar da var olabilir).
+- `fill()`: imza `fill(template, resolved_fields, context=None)`. Görev tanımındaki
+  `self.template` fikri bu sınıfta yok — şablon her çağrıda parametre olarak geliyor
+  ve mevcut çağıranlar (`engine/actions/base.py`, testler) böyle kullanıyor; imzayı
+  değiştirmek onları kırardı.
+- `render()`: bağlam `{**payload, **config, **fetched}` — ilan edilmiş alan kazanır
+  (beyan nereden geldiğine dair bir sözdür), ilan edilmemiş `{{customer.address.city}}`
+  ise doğrudan bağlamdan çözülür.
+
+**Davranış notu:** `{%if bonus%}` artık `bonus == ""` iken bloğu düşürüyor. Eski kod
+"anahtar var mı" diye bakıyordu. Boş değer ile yokluk arasındaki farkı blok
+koşulunda korumak anlamsız: `exists` operatörü zaten `MISSING` üzerinden çalışıyor,
+blok ise "göster mi" sorusu.
+
+### 4. `serializers/templates.py` — beyan opsiyonel hâle geldi
+
+Doğrulama placeholder'ı **taban yolu** üzerinden görüyor: `{{total | currency:TRY}}`
+→ `total`, `{%if customer.vip%}` → `customer.vip`. Beyan **gerekmiyor** eğer yol
+rezerve bir kökten başlıyorsa (`steps`, `trigger`, `now`, ...) ya da noktalı/indeksli
+bir yolsa, ve şablon **hiç alan ilan etmiyorsa**. Beyan **gerekiyor** eğer şablon
+alan ilan ediyor ve `{{customer}}` gibi çıplak bir ad kullanılıyorsa — alan haritasının
+yakaladığı şey tam olarak bu yazım hatası, ve onu sessizce affetmek haritayı işe
+yaramaz hâle getirirdi. `RESERVED_NAMESPACES` serializer'da tekrar tanımlanmadı,
+`expressions`'tan import edildi: iki liste er geç ayrışır.
+
+`fields` alanı `required=False, default=dict` (yalnızca serializer'da). Modele
+`default=dict` eklemek bir migration daha isterdi; `{}` zaten geçerli bir JSON
+değeri, kolon NOT NULL kalmaya devam ediyor. **Sonuç:** `Template.objects.create()`
+hâlâ `fields` istiyor, API istemiyor.
+
+### 5. Testler
+
+565 test (472'den): `tests/test_engine_expressions.py` 86 test (bağlam, yol çözümleme,
+dokuz filtre, placeholder ayrıştırma, blok ve placeholder render'ı, native tip koruma,
+SSTI güvenliği, `TemplateManager` entegrasyonu), `TemplateAPITests` +5 (noktalı yol,
+rezerve kök, filtre taban yolu, `fields: {}`, `fields` hiç gönderilmemesi) ve
+`test_engine_purity.py` +2 (`expressions.py`/`template_manager.py` temiz kalsın;
+ihlal sayısı **yalnızca azalabilir** — 9 → 7 tavanı, sabit bir liste gibi çürümez).
+
+---
+
 
 **Kim:** OpenCode (worker) · **Branch:** `develop`
 **Durum:** 409 test geçiyor (385'ten), 1 beklenen başarısızlık (motor saflığı 9'da sabit).

@@ -675,6 +675,67 @@ class TemplateAPITests(CacheTestMixin, TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
 
+    def test_a_dotted_path_resolves_from_the_context_and_needs_no_declaration(self):
+        # `{{customer.address.city}}` is not a template input; it is the payload. The
+        # declared fields say nothing about it and must not have to.
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            '/api/v1/automations/templates/',
+            self._payload(raw_text="Merhaba {{customer.address.city}}"),
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+    def test_a_reserved_context_root_needs_no_declaration(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            '/api/v1/automations/templates/',
+            self._payload(raw_text="Sipariş {{steps.1.output.id}} - {{now | date:DD.MM.YYYY}}"),
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+    def test_a_filter_pipe_is_validated_on_its_base_path(self):
+        # `{{total | currency:TRY}}` refers to `total`; the filter is not part of the
+        # field name, so a declared `total` still satisfies the check.
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            '/api/v1/automations/templates/',
+            self._payload(
+                raw_text="Toplam {{total | currency:TRY}}",
+                fields={
+                    "total": {
+                        "type": "integer", "required": True,
+                        "description": "Total", "source": "payload",
+                    }
+                },
+            ),
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+    def test_a_template_may_declare_no_fields_at_all(self):
+        # The pure context-resolved template: nothing declared, everything from the
+        # execution context (ROADMAP 4.5).
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            '/api/v1/automations/templates/',
+            self._payload(raw_text="Merhaba {{customer.name}}", fields={}),
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(Template.objects.get(name="Welcome").fields, {})
+
+    def test_a_template_may_omit_the_field_map_entirely(self):
+        self.client.force_authenticate(user=self.owner)
+        payload = self._payload(raw_text="Merhaba {{customer.name}}")
+        payload.pop('fields')
+        response = self.client.post(
+            '/api/v1/automations/templates/', payload, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(Template.objects.get(name="Welcome").fields, {})
+
     def test_a_malformed_field_definition_is_rejected(self):
         self.client.force_authenticate(user=self.owner)
         response = self.client.post(

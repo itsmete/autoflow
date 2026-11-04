@@ -112,6 +112,24 @@ class EnginePurityTests(SimpleTestCase):
         # Cheap guard against a moved directory silently emptying the check below.
         self.assertGreater(len(engine_modules()), 5)
 
+    def test_the_expression_layer_is_free_of_the_framework(self):
+        # The two modules Faz 1.C cleaned. An exact-list assertion on the remaining
+        # violations would rot as Phase 1 progresses, but these two are meant to stay
+        # clean forever, so anchoring to them is stable.
+        for name in ("expressions.py", "template_manager.py"):
+            module = ENGINE_DIR / name
+            self.assertEqual(
+                find_framework_imports(module), [],
+                f"{name} must stay pure Python",
+            )
+
+    def test_the_violation_count_only_ever_falls(self):
+        # 9 violations after Faz 1.A, 7 after Faz 1.C. A ceiling cannot rot the way a
+        # fixed list does, and it still fails the moment somebody adds a new Django
+        # import to the engine.
+        total = sum(len(find_framework_imports(module)) for module in engine_modules())
+        self.assertLessEqual(total, 7)
+
     @unittest.expectedFailure
     def test_the_engine_does_not_import_django(self):
         violations = []
