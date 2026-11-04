@@ -1,6 +1,8 @@
 venv/
 .venv/
 .env
+.coverage
+htmlcov/
 *.pyc
 __pycache__/
 db.sqlite3
