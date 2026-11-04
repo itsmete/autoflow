@@ -113,12 +113,18 @@ class AutomationConditionSerializer(serializers.ModelSerializer):
 
         class Meta:
                 model = AutomationCondition
-                fields= ['field','operator','value','logical_operator']
-        
+                fields= ['field','operator','value','logical_operator','quantifier','on_missing','order']
+
+                # Derived from the position in the submitted list, never sent. Grouping
+                # reads the conditions in order ('or' opens a new AND-group), so the
+                # authored order has to be the evaluated order - letting a client set
+                # both a position and an order invites the two to disagree.
+                read_only_fields = ['order']
+
 class AutomationLogSerializer(serializers.ModelSerializer):
         class Meta:
                 model = AutomationLog
-                fields = ['status','triggered_at','error_message','execution_context']
+                fields = ['status','triggered_at','error_message','execution_context','decision']
 
 
 
@@ -199,8 +205,10 @@ class AutomationWriteSerializer(serializers.ModelSerializer):
                 for t in triggers:
                         AutomationTrigger.objects.create(automation= automation ,**t)
                 
-                for c in conditions:
-                        AutomationCondition.objects.create(automation= automation ,**c)
+                # order comes from the position in the submitted list: grouping reads
+                # conditions in order, so authoring order IS evaluation order.
+                for index,c in enumerate(conditions):
+                        AutomationCondition.objects.create(automation= automation ,order = index ,**c)
 
                 for a in actions:
                         AutomationAction.objects.create(automation= automation ,**a)
@@ -239,8 +247,10 @@ class AutomationWriteSerializer(serializers.ModelSerializer):
                         
                         AutomationTrigger.objects.create(automation= automation ,**t)
                 
-                for c in conditions:
-                        AutomationCondition.objects.create(automation= automation ,**c)
+                # order comes from the position in the submitted list: grouping reads
+                # conditions in order, so authoring order IS evaluation order.
+                for index,c in enumerate(conditions):
+                        AutomationCondition.objects.create(automation= automation ,order = index ,**c)
 
                 for a in actions:
                         AutomationAction.objects.create(automation= automation ,**a)

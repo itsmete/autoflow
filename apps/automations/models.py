@@ -2,6 +2,7 @@ from django.db import models
 from core.models import BaseModel
 import secrets
 from apps.channels.models import ChannelTypes
+from .engine import operators as ops
 """
 
 Automation FLow : Trigger -> Condition -> Action 
@@ -51,12 +52,51 @@ class TriggerType(models.TextChoices):
 
 
 class ConditionOperators(models.TextChoices):
-        EQUALS      = 'eq', 'Eşittir'
-        NOT_EQUALS  = 'neq', 'Eşit Değildir'
-        GREATER     = 'gt', 'Büyüktür'
-        LESS        = 'lt', 'Küçüktür'
-        CONTAINS    = 'contains', 'İçerir'
-        IN          = 'in', 'Listede'
+        # The VALUES live in engine/operators.py, which is where they are actually
+        # applied. Spelling them twice is how the two drift apart; and the dependency
+        # has to point this way - the Django layer may know about the engine, the
+        # engine may not know about Django (tests/test_engine_purity.py).
+        EQUALS           = ops.EQUALS, 'Eşittir'
+        NOT_EQUALS       = ops.NOT_EQUALS, 'Eşit Değildir'
+        GREATER          = ops.GREATER, 'Büyüktür'
+        GREATER_OR_EQUAL = ops.GREATER_OR_EQUAL, 'Büyük veya Eşittir'
+        LESS             = ops.LESS, 'Küçüktür'
+        LESS_OR_EQUAL    = ops.LESS_OR_EQUAL, 'Küçük veya Eşittir'
+
+        CONTAINS         = ops.CONTAINS, 'İçerir'
+        NOT_CONTAINS     = ops.NOT_CONTAINS, 'İçermez'
+        STARTS_WITH      = ops.STARTS_WITH, 'İle Başlar'
+        ENDS_WITH        = ops.ENDS_WITH, 'İle Biter'
+        MATCHES          = ops.MATCHES, 'Desene Uyar'
+
+        IN               = ops.IN, 'Listede'
+        NOT_IN           = ops.NOT_IN, 'Listede Değil'
+        BETWEEN          = ops.BETWEEN, 'Aralıkta'
+
+        EXISTS           = ops.EXISTS, 'Mevcut'
+        NOT_EXISTS       = ops.NOT_EXISTS, 'Mevcut Değil'
+        IS_EMPTY         = ops.IS_EMPTY, 'Boş'
+        IS_NOT_EMPTY     = ops.IS_NOT_EMPTY, 'Boş Değil'
+
+        WITHIN_LAST      = ops.WITHIN_LAST, 'Son ... İçinde'
+        OLDER_THAN       = ops.OLDER_THAN, 'Şundan Eski'
+
+
+class Quantifier(models.TextChoices):
+        # Turns a wildcard path into a question about a collection:
+        # field='items[*].stock', quantifier='any', operator='lt', value=1
+        SINGLE = ops.QUANTIFIER_NONE_SET, 'Tek değer'
+        ANY    = ops.QUANTIFIER_ANY, 'Herhangi biri'
+        ALL    = ops.QUANTIFIER_ALL, 'Hepsi'
+        NONE   = ops.QUANTIFIER_NO, 'Hiçbiri'
+
+
+class MissingFieldPolicy(models.TextChoices):
+        # Raising was the only behaviour, so one optional field could fail an entire
+        # automation.
+        FAIL  = ops.ON_MISSING_FAIL, 'Hata ver'
+        FALSE = ops.ON_MISSING_FALSE, 'Yanlış say'
+        TRUE  = ops.ON_MISSING_TRUE, 'Doğru say'
 
 class ActionTypes(models.TextChoices):
         EMAIL = 'email' ,'E-posta'
@@ -79,8 +119,8 @@ class AutomationStatus(models.TextChoices):
 
 
 class LogicalOperator(models.TextChoices):
-    AND = 'and', 'Ve'
-    OR = 'or', 'Veya'
+    AND = ops.AND, 'Ve'
+    OR = ops.OR, 'Veya'
 
 
 
@@ -121,11 +161,29 @@ class AutomationTrigger(BaseModel):
 class AutomationCondition(BaseModel):
         automation = models.ForeignKey('Automation',on_delete=models.CASCADE,related_name='conditions')
 
-        # order_amount , customer_type etc.
-        field = models.CharField(max_length=100)
-        value = models.CharField(max_length=255)
+        # A path into the payload, not just a key: 'order_amount', but also
+        # 'customer.address.city' or 'items[*].stock'. See engine/paths.py.
+        field = models.CharField(max_length=200)
+
+        # JSON rather than text, so a number is a number, a list is a list and a bool
+        # is a bool. As a CharField, gt/lt had to int() both sides - 10.5 was a crash
+        # and a date was impossible - and a list could only be a comma-joined string.
+        value = models.JSONField(null=True,blank=True)
 
         operator = models.CharField(choices=ConditionOperators)
+
+        quantifier = models.CharField(
+                choices=Quantifier.choices,
+                default=Quantifier.SINGLE,
+                max_length=4,
+                blank=True
+        )
+
+        on_missing = models.CharField(
+                choices=MissingFieldPolicy.choices,
+                default=MissingFieldPolicy.FAIL,
+                max_length=5
+        )
 
         # logical operator is for comparing with the other condition objs
         logical_operator = models.CharField(
@@ -133,6 +191,14 @@ class AutomationCondition(BaseModel):
                 default=LogicalOperator.AND,
                 max_length=3
         )
+
+        # Grouping depends on the order the conditions are read in, and the queryset
+        # had none - so the MEANING of a condition set depended on whatever order the
+        # database happened to return. Same reason AutomationAction carries one.
+        order = models.PositiveIntegerField(default=0)
+
+        class Meta:
+                ordering = ['order','created_at']
 
 
 
@@ -164,6 +230,11 @@ class AutomationLog(BaseModel):
 
 
         execution_context = models.JSONField()
+
+        # Why the conditions came out the way they did: every condition, its actual
+        # value, its result, and which ones were short-circuited. Answers "why did
+        # this customer not get the message", which a bare status never could.
+        decision = models.JSONField(null=True,blank=True)
 
 
 

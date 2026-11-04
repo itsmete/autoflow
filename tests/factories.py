@@ -108,13 +108,17 @@ def make_trigger(automation, trigger_type="manual", config=None, initial_data=No
     )
 
 
-def make_condition(automation, field="amount", operator="gt", value="100", logical_operator="and"):
+def make_condition(automation, field="amount", operator="gt", value="100",
+                   logical_operator="and", quantifier="", on_missing="fail", order=0):
     return AutomationCondition.objects.create(
         automation=automation,
         field=field,
         operator=operator,
         value=value,
         logical_operator=logical_operator,
+        quantifier=quantifier,
+        on_missing=on_missing,
+        order=order,
     )
 
 

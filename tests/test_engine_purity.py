@@ -96,15 +96,11 @@ class ImportScannerTests(SimpleTestCase):
         relative = [d for _, d in find_framework_imports(base) if d.startswith("from .")]
         self.assertEqual(relative, [])
 
-    def test_climbing_out_of_the_engine_is_a_violation(self):
-        # ...while the same two dots in engine/evaluator.py reach the ORM.
-        evaluator = ENGINE_DIR / "evaluator.py"
-        self.assertIn(
-            "from ..models import ...",
-            [d for _, d in find_framework_imports(evaluator)],
-        )
-
     def test_depth_is_counted_not_just_the_dots(self):
+        # Asserted against _escapes_engine directly rather than against a module that
+        # currently violates the rule: Phase 1 exists to clean those modules, so a
+        # test anchored to one of them rots the moment the work succeeds. This one
+        # was already caught doing exactly that.
         self.assertFalse(_escapes_engine(ENGINE_DIR / "actions" / "base.py", 2))
         self.assertTrue(_escapes_engine(ENGINE_DIR / "actions" / "base.py", 3))
         self.assertTrue(_escapes_engine(ENGINE_DIR / "evaluator.py", 2))

@@ -148,6 +148,68 @@ class AutomationAPITests(CacheTestMixin, TestCase):
         self.assertEqual(created.conditions.count(), 1)
         self.assertEqual(created.actions.count(), 1)
 
+    def test_condition_order_follows_the_submitted_list(self):
+        # Grouping reads conditions in order ('or' opens a new AND-group), so the
+        # authoring order must be the order the evaluator later sees. The field is
+        # read-only on the serializer and derived from list position.
+        self.client.force_authenticate(user=self.owner)
+        payload = self._payload(conditions=[
+            {"field": "a", "operator": "eq", "value": 1, "logical_operator": "and"},
+            {"field": "b", "operator": "eq", "value": 2, "logical_operator": "or"},
+            {"field": "c", "operator": "eq", "value": 3, "logical_operator": "and"},
+        ])
+
+        response = self.client.post('/api/v1/automations/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+        created = Automation.objects.get(name="Created")
+        self.assertEqual(
+            list(created.conditions.values_list("field", "order")),
+            [("a", 0), ("b", 1), ("c", 2)],
+        )
+        self.assertEqual([c["field"] for c in response.data["conditions"]], ["a", "b", "c"])
+
+    def test_updating_an_automation_reorders_conditions_by_submitted_position(self):
+        factories.make_condition(self.automation, order=0, field="a", operator="eq", value=1)
+        factories.make_condition(self.automation, order=1, field="b", operator="eq", value=2)
+
+        self.client.force_authenticate(user=self.owner)
+        payload = self._payload(name=self.automation.name, conditions=[
+            {"field": "b", "operator": "eq", "value": 2, "logical_operator": "and"},
+            {"field": "a", "operator": "eq", "value": 1, "logical_operator": "or"},
+        ])
+
+        response = self.client.put(
+            f'/api/v1/automations/{self.automation.id}/', payload, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+        self.assertEqual(
+            list(self.automation.conditions.values_list("field", "order")),
+            [("b", 0), ("a", 1)],
+        )
+
+    def test_condition_values_keep_their_json_types(self):
+        # value used to be a CharField; numbers, lists and booleans all arrived as
+        # strings. Round-tripping through the API has to preserve the type.
+        self.client.force_authenticate(user=self.owner)
+        payload = self._payload(conditions=[
+            {"field": "total", "operator": "gte", "value": 10.5, "logical_operator": "and"},
+            {"field": "status", "operator": "in", "value": ["paid", "shipped"],
+             "logical_operator": "and"},
+            {"field": "vip", "operator": "eq", "value": True, "logical_operator": "and"},
+        ])
+
+        response = self.client.post('/api/v1/automations/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+        created = Automation.objects.get(name="Created")
+        values = {condition.field: condition.value for condition in created.conditions.all()}
+
+        self.assertEqual(values["total"], 10.5)
+        self.assertEqual(values["status"], ["paid", "shipped"])
+        self.assertIs(values["vip"], True)
+
     def test_creating_in_another_tenant_is_rejected(self):
         self.client.force_authenticate(user=self.owner)
         response = self.client.post(

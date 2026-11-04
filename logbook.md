@@ -12,6 +12,113 @@ Mimari, stil ve kalıcı kurallar burada değil → `CLAUDE.md`.
 
 ---
 
+## 2026-08-03 — Faz 1.A: karar katmanı (evaluator v2 + karar izi)
+
+**Kim:** Claude (Opus 5) · **Branch:** `develop`
+**Durum:** 381 test geçiyor (326'dan), 1 beklenen başarısızlık. Motor saflığı 10 → 9.
+
+Motorun en zayıf yeri burasıydı: 67 satır, altı operatör, hepsi string karşılaştırması.
+"Kural motoru" denen şey bir `filter()` çağrısından az iş yapıyordu.
+
+### 1. Üç davranış değişikliği — açıkça yazılıyor çünkü mevcut anlamı etkiliyor
+
+**(a) Öncelik. `AND` artık `OR`'dan sıkı bağlıyor.** Eski döngü soldan sağa
+katlıyordu: `A AND B OR C AND D` → `(((A ve B) veya C) ve D)`. Artık
+`(A ve B) veya (C ve D)` — her dilin kullandığı okuma. Koşullar
+`logical_operator`'a göre gruplanıyor: `or` yeni grup açar, `and` mevcut grubu
+uzatır. **Saf-AND ve saf-OR zincirleri etkilenmiyor**, sadece karışık zincirler.
+Eski davranış bilinçli bir tasarım değil, bir katlama döngüsünün yan etkisiydi.
+
+**(b) Kısa devre.** Bir grup ilk `False`'ta durur, tüm küme ilk `True` grupta durur.
+Bugün israf; `ai_eval` geldiğinde doğrudan para.
+
+**(c) Bool değil, `Decision`.** `evaluate_conditions` artık her koşulu, gerçek
+değerini ve sonucunu taşıyan bir `Decision` döndürüyor. `__bool__` sonucu
+döndürdüğü için `if not decision:` çağrı yerleri değişmedi.
+
+### 2. Sıralama — sessiz bir belirsizlik kapatıldı
+
+`AutomationCondition`'ın `Meta.ordering`'i yoktu ve orchestrator `.all()` çağırıyordu.
+Gruplama sıraya bağlı olduğu için, bir koşul kümesinin **anlamı** veritabanının o an
+hangi sırayla döndürdüğüne bağlıydı. `order` alanı eklendi (serializer listedeki
+konumdan türetiyor, API'den yazılamıyor) + `Meta.ordering`.
+
+### 3. `value` CharField → JSONField
+
+`gt`/`lt` iki tarafı da `int()`'e zorluyordu: `10.5` çökme, tarih imkânsız, liste
+ancak virgülle birleştirilmiş string. Artık sayı sayı, liste liste, bool bool.
+
+Migration `0007` sırayı önemsiyor: satırlar **sütun hâlâ CharField'ken** JSON metnine
+çevriliyor, sonra `AlterField`. Ters sırada Django ilk okumada `json.loads('paid')`
+ile patlardı.
+
+**Data migration bilinçli olarak dar:** yalnızca sayılar metinden çıkarılıyor, bir de
+`in`/`not_in`/`between` için virgül ayrımı listeye dönüyor. Eski değerin tamamını
+`json.loads`'tan geçirmek `"true"` stringini `True` boolean'ına, `"null"`ı `None`'a
+çevirirdi — koşulun neyle karşılaştırdığını sessizce değiştirmek. Sayı olarak kalan
+bir string zaten çalışıyor (operatörler coerce ediyor); boolean'a dönen bir string
+çalışmıyor.
+
+### 4. Yeni yetenekler
+
+| Ne | Örnek |
+|---|---|
+| Yol çözümleme | `customer.address.city`, `items[1].sku`, `items.1.sku` |
+| Joker | `items[*].stock` bir liste üretir |
+| Operatörler 6 → 21 | `gte/lte`, `not_contains`, `starts_with`, `ends_with`, `regex`, `not_in`, `between`, `exists`, `is_empty`, `within_last`, `older_than` … |
+| Nicelik belirteci | `field='items[*].stock', quantifier='any', operator='lt', value=1` |
+| Eksik alan politikası | `on_missing`: `fail` (varsayılan) / `false` / `true` |
+
+**Nicelik belirteci neden ayrı bir sütun:** alternatif `any_eq`, `all_gt`,
+`none_contains` gibi operatörlerin kombinatoryal patlamasıydı. Tek bir alan her
+operatörle çarpışmadan birleşiyor.
+
+**Zamansal operatörler `now`'ı enjekte ediyor** (`OperatorContext`), saatten
+okumuyor: hem test edilebilir hem de ileride bir replay, çalıştırmanın *orijinal*
+zamanına karşı değerlendirilebilir.
+
+### 5. Karar izi — 1.A'nın asıl teslimi
+
+`AutomationLog.decision` (migration `0008`) her koşulu, gerçek değerini, sonucunu ve
+hangilerinin kısa devreyle atlandığını saklıyor. `Decision.explain()` insan ve model
+tarafından okunabilir tek satırlık özetler üretiyor.
+
+Neden önemli: "false" hiçbir soruyu cevaplamıyor; **"320, 500'den büyük değil"**
+hem "bu müşteriye neden mesaj gitmedi" sorusunu hem de — lokal model kural yazmaya
+başladığında — modelin kendini düzeltmesini sağlayan geri beslemeyi veriyor.
+
+`EvaluationError` artık **kısmi izi taşıyor** (`error.decision`). Yarıda ölen
+çalıştırma, muhakemesi en çok merak edilen çalıştırmadır; onu `raise`'e kurban
+vermek israftı.
+
+### 6. Bağımlılık yönü çevrildi
+
+`engine/operators.py` operatör **isimlerinin** tek kaynağı; `models.ConditionOperators`
+choices'ını ondan kuruyor. Django katmanı motoru bilebilir, motor Django'yu bilemez.
+`evaluator.py` artık tamamen saf — saflık ihlali 10'dan 9'a indi. Yeni modüller
+(`paths.py`, `operators.py`, `decision.py`) baştan Django'suz yazıldı.
+
+### 7. Yol boyunca yakalananlar
+
+- **`Decision.__bool__` kendi ayağıma dolandı.** Orchestrator'da
+  `e.decision.as_dict() if e.decision else None` yazmıştım. Kısmi iz daima
+  `result=False` taşıdığı için `if e.decision` **yanlış** dallanıyor ve kurtarılmak
+  istenen şeyi atıyordu. `is not None` şart. Test yakaladı.
+- **Saflık testimin sanity fixture'ı çürüdü.** `test_climbing_out_of_the_engine_is_a_violation`
+  `evaluator.py`'nin `..models` import ettiğine dayanıyordu — 1.A onu temizleyince
+  test kırmızıya döndü. Faz 1'in işi tam olarak o dosyaları temizlemek olduğu için,
+  ihlal eden gerçek bir dosyaya bağlanan test **başarı anında** çürüyor. Sentetik
+  `_escapes_engine` iddiasıyla değiştirildi.
+- `PRESENCE_OPERATORS` eksik alan politikasını **atlıyor**: "bu var mı" sorusuna
+  "yok, o yüzden cevap vermeyi reddediyorum" demek kötü bir şaka olurdu.
+- Sıralama operatörleri karşılaştıramadıklarında **reddediyor** (raise), string
+  karşılaştırmasına düşmüyor: `'9' > '10'` stringlerde doğrudur ve asla kastedilen
+  şey değildir.
+- Regex deseni ve konusu boyut sınırlı. Python'un `re`'sinde timeout yok, kiracıdan
+  gelen desene karşı ucuz tek savunma bu.
+
+---
+
 ## 2026-08-03 — Faz 0: zamanlayıcı onarımı ve webhook sertleştirmesi
 
 **Kim:** Claude (Opus 5) · **Branch:** `develop`

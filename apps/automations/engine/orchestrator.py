@@ -32,15 +32,21 @@ class AutomationOrchestrator:
                         # AutomationCondition declares related_name='conditions', so the
                         # default automationcondition_set accessor does not exist and
                         # raised AttributeError on every run.
+                        # AutomationCondition.Meta declares ordering, which grouping
+                        # depends on: 'or' opens a new AND-group, so the meaning of the
+                        # set is a function of the order it is read in.
                         conditions = automation.conditions.all()
-                        
-                        if not ( ConditionEvaluator().evaluate_conditions(conditions,data)):
+
+                        decision = ConditionEvaluator().evaluate_conditions(conditions,data)
+
+                        if not decision:
                                 logger.info("Automation conditions are not satisfied, exiting")
                                 AutomationLog.objects.create(
                                         automation = automation,
                                         status = AutomationStatus.SKIPPED,
                                         error_message = "Automation conditions are not satisfied",
                                         execution_context = data,
+                                        decision = decision.as_dict(),
                                 )
                                 return False
 
@@ -56,7 +62,8 @@ class AutomationOrchestrator:
                                 AutomationLog.objects.create(
                                         automation = automation,
                                         status = AutomationStatus.SUCCESS,
-                                        execution_context = data
+                                        execution_context = data,
+                                        decision = decision.as_dict()
                                 )
                                 return True
                         
@@ -78,6 +85,16 @@ class AutomationOrchestrator:
                                         status = AutomationStatus.FAILURE,
                                         error_message = str(e),
                                         execution_context = data,
+                                        # The evaluator hands over whatever it managed to
+                                        # decide before it gave up; that partial trace is
+                                        # the most useful one there is.
+                                        #
+                                        # `is not None`, not a truth test: Decision.__bool__
+                                        # reports the RESULT, and a partial trace from a
+                                        # failed run always carries result=False. Testing
+                                        # it for truth threw away the very thing being
+                                        # rescued.
+                                        decision = e.decision.as_dict() if e.decision is not None else None,
                         )
 
                 except ExecutionError as e:
