@@ -105,6 +105,10 @@ class ActionTypes(models.TextChoices):
         INSTAGRAM = 'instagram' ,'Instagram'
         WEBHOOK = 'webhook' , 'Webhook'
         SMS = 'sms' ,'SMS'
+        # A plain HTTP call to any API - the generic integration point that keeps a
+        # missing provider from blocking a whole automation (ROADMAP section 4.3).
+        # Unlike 'webhook' it captures the response, so the next step can read it.
+        HTTP_REQUEST = 'http_request', _("HTTP İsteği")
 
 class OnFailureChoices(models.TextChoices):
         STOP = 'stop' , 'Durdur'

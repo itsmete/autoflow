@@ -790,3 +790,145 @@ class RoadmapExitCriterionTests(TestCase):
 
         sms_send.assert_called_once()
         wa_send.assert_not_called()
+
+
+HTTP_REQUEST = "apps.automations.engine.actions.http_request.requests.request"
+
+
+def http_response(status_code=200, payload=None, text="", headers=None):
+        response = MagicMock()
+        response.status_code = status_code
+        response.text = text
+        response.headers = headers or {}
+        if payload is None:
+                response.json.side_effect = ValueError("not json")
+        else:
+                response.json.return_value = payload
+        return response
+
+
+class HttpRequestActionTests(TestCase):
+        """
+        ROADMAP section 4.3: the generic HTTP node, and - the part that matters - its
+        response captured into the step's output so the next step can read it.
+        """
+
+        def setUp(self):
+                self.tenant = factories.make_tenant()
+                self.automation = factories.make_automation(self.tenant)
+                self.executor = AutomationExecutor()
+
+        def _run(self, context=None):
+                return self.executor.execute_graph(
+                        self.automation.steps.all(),
+                        self.automation.edges.all(),
+                        build_execution_context(context or {}),
+                )
+
+        def test_the_schema_fills_the_optional_fields(self):
+                from apps.automations.serializers.steps import validate_step_config
+
+                config = validate_step_config(
+                        "action",{"url" : "https://api.example.com/orders"},"http_request",
+                )
+
+                self.assertEqual(config["method"],"GET")
+                self.assertEqual(config["headers"],{})
+                self.assertEqual(config["query_params"],{})
+                self.assertEqual(config["body"],{})
+                self.assertEqual(config["timeout"],10)
+
+        def test_the_schema_rejects_a_missing_url_and_a_bad_method(self):
+                from apps.automations.serializers.steps import validate_step_config
+
+                with self.assertRaises(Exception):
+                        validate_step_config("action",{},"http_request")
+
+                with self.assertRaises(Exception):
+                        validate_step_config(
+                                "action",
+                                {"url" : "https://api.example.com/","method" : "TRACE"},
+                                "http_request",
+                        )
+
+        def test_the_response_is_captured_into_the_step_output(self):
+                call = factories.make_step(
+                        self.automation, key="call", action_type="http_request",
+                        config={"url":"https://api.example.com/orders","method":"POST",
+                                "body":{"sku":"A1"}},
+                )
+                after = factories.make_step(
+                        self.automation, key="after", action_type="webhook",
+                        config={
+                                **webhook_config("https://example.com/hook"),
+                                "payload":{"count":"{{steps.call.output.json.count}}"},
+                        },
+                )
+                factories.make_edge(self.automation, None, call)
+                factories.make_edge(self.automation, call, after)
+
+                response = http_response(
+                        200,
+                        payload={"count" : 3},
+                        text='{"count": 3}',
+                        headers={"X-RateLimit-Remaining" : "99"},
+                )
+
+                from apps.automations.engine.actions.send_webhook import SendWebhook
+
+                # Not patch(WEBHOOK_REQUESTS): send_webhook and http_request share the
+                # same `requests` module object, so patching `requests.request` for
+                # both would leave whichever patch entered last winning - and the
+                # http call would silently get the webhook mock. Patch the method.
+                with patch(HTTP_REQUEST, return_value=response) as http, \
+                                patch.object(SendWebhook, "_execute_without_channel", return_value=True) as webhook:
+                        result = self._run()
+
+                self.assertEqual(result.status, RESULT_SUCCESS)
+                output = result.context["steps"]["call"]["output"]
+                self.assertTrue(output["sent"])
+                self.assertEqual(output["status_code"], 200)
+                self.assertEqual(output["json"], {"count" : 3})
+                self.assertEqual(output["text"], '{"count": 3}')
+                self.assertEqual(output["headers"], {"X-RateLimit-Remaining" : "99"})
+                # The next step read the response body, not the literal expression.
+                self.assertEqual(webhook.call_args[0][0]["payload"], {"count" : 3})
+                self.assertEqual(
+                        http.call_args.kwargs,
+                        {
+                                "method" : "POST",
+                                "url" : "https://api.example.com/orders",
+                                "headers" : {},
+                                "params" : None,
+                                "json" : {"sku" : "A1"},
+                                "timeout" : 10,
+                        },
+                )
+
+        def test_an_error_status_fails_the_step(self):
+                step = factories.make_step(
+                        self.automation, key="call", action_type="http_request",
+                        config={"url":"https://api.example.com/boom"},
+                )
+                factories.make_edge(self.automation, None, step)
+
+                with patch(HTTP_REQUEST, return_value=http_response(500, text="kaboom")):
+                        result = self._run()
+
+                self.assertEqual(result.status, RESULT_FAILED)
+                self.assertIn("HTTP 500", result.context["steps"]["call"]["error"])
+
+        def test_a_transport_error_fails_the_step(self):
+                step = factories.make_step(
+                        self.automation, key="call", action_type="http_request",
+                        config={"url":"https://api.example.com/boom"},
+                )
+                factories.make_edge(self.automation, None, step)
+
+                import requests
+
+                with patch(HTTP_REQUEST, side_effect=requests.ConnectionError("no route")):
+                        result = self._run()
+
+                self.assertEqual(result.status, RESULT_FAILED)
+                self.assertIn("no route", result.context["steps"]["call"]["error"])

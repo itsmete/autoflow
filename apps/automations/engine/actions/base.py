@@ -22,6 +22,9 @@ class BaseAction:
         def __init__(self ,action_model):
                 self.action_model = action_model
                 self.template_manager = TemplateManager()
+                # What `_execute_without_channel` returned, when it returned more than
+                # a bool. run_with_output() lifts it into the step's output.
+                self._last_output = None
 
         def prepare(self,payload) -> dict:
                 config = getattr(self.action_model,'config',None) or {}
@@ -94,7 +97,15 @@ class BaseAction:
                 else:
                         # Honour what the subclass reports instead of always claiming
                         # success; the executor's retry logic reads this return value.
-                        return bool(self._execute_without_channel(prepared_data))
+                        raw = self._execute_without_channel(prepared_data)
+
+                        # An action that talks to an API can answer "what came back".
+                        # A dict is that answer; keeping it here rather than changing
+                        # execute()'s bool contract lets every existing caller keep
+                        # reading a bool (ROADMAP section 4.3, output capture).
+                        self._last_output = raw if isinstance(raw,dict) else None
+
+                        return bool(raw)
 
                 return True
         
@@ -121,7 +132,7 @@ class BaseAction:
 
                 ok = self.execute(prepared)
 
-                return {
+                output = {
                         'sent' : bool(ok),
                         'action_type' : getattr(self.action_model,'action_type',''),
                         'message' : prepared.get('message'),
@@ -131,3 +142,17 @@ class BaseAction:
                                 if key not in self.CONTEXT_NAMESPACES
                         },
                 }
+
+                # The response of an action that produced one - `status_code`, `json`,
+                # `text`, `headers` - merged on top, so `{{steps.check.output.json.id}}`
+                # works. `prepared` stays the request, `output` also holds the answer.
+                raw = getattr(self,'_last_output',None)
+
+                if isinstance(raw,dict):
+                        output.update(raw)
+
+                # Reset: the instance must not report the previous run's response if
+                # it is reused for another step.
+                self._last_output = None
+
+                return output

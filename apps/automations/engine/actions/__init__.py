@@ -3,13 +3,15 @@ from .send_webhook import SendWebhook
 from .send_insta_dm import SendInstagramDM
 from .send_wp_message import SendWhatsappMessage
 from .send_sms import SendSMS
+from .http_request import HttpRequestAction
 
 ACTION_CLASSES = {
         'email' : SendEmail,
         'webhook' : SendWebhook,
         'instagram' : SendInstagramDM,
         'whatsapp' : SendWhatsappMessage,
-        'sms' : SendSMS
+        'sms' : SendSMS,
+        'http_request' : HttpRequestAction
 
 }
 

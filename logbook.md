@@ -12,6 +12,53 @@ Mimari, stil ve kalıcı kurallar burada değil → `CLAUDE.md`.
 
 ---
 
+## 2026-11-05 — Faz 1.E (1/2): `http_request` aksiyonu ve cevabın adım çıktısına yazılması
+
+**Kim:** OpenCode (worker) · **Branch:** `develop`
+**Durum:** 604 test geçiyor (599'dan), 1 beklenen başarısızlık. Görev T-105.
+
+`webhook` zaten HTTP çağrısı yapıyordu ama cevabı **atıyordu**: `_execute_without_channel`
+`True` dönüyordu. ROADMAP §4.3'teki `http_request`'in asıl katkısı çağrı değil, cevabı
+`context['steps'][key]['output']`'a yazmak — bir sonraki adım
+`{{steps.check.output.json.count}}` okuyup dallanabilsin.
+
+### 1. Ne değişti
+
+- `ActionTypes.HTTP_REQUEST` + migration `0010` (yalnızca `choices` değişiyor).
+- `serializers/actions/http_request.py`: `url` zorunlu, `method` varsayılan `GET`,
+  `headers`/`query_params`/`body` `{}`, `timeout` 10 — webhook şemasıyla aynı desen,
+  ama opsiyonel alanlar şemada **default taşıyor**, böylece istemci altı alan yazmak
+  zorunda değil ve saklanan config provider'ın okuyacağı şeyle aynı.
+- `engine/actions/http_request.py`: `requires_channel = False`. `params` **`None`**
+  (`{}` url'e çıplak `?` eklerdi). 4xx/5xx `ExecutionError` — "istek gitti ama sayfa
+  hata sayfası" diye sonraki adımı yanlış gövdeyle çalıştırmaktan iyidir.
+- `BaseAction`: `execute()` bool sözleşmesini **koruyor**; `_execute_without_channel`
+  dict döndürdüyse `_last_output`'a konuyor ve `run_with_output()` çıktıya
+  birleştiriyor (`status_code`, `json`, `text`, `headers`). Çıktı sonra sıfırlanıyor —
+  instance başka bir adımda kullanılırsa eski cevabı raporlamasın.
+- `send_webhook`'a `timeout = config.get('timeout', 10)` eklendi; cevapsız bir webhook
+  koşuyu süresiz açık tutmasın.
+
+### 2. Denenip başarısız olan yol: iki modülde `requests.request` patch'lemek
+
+Testte `patch(WEBHOOK_REQUESTS)` ile `patch(HTTP_REQUEST)` **iç içe** açıldı ve HTTP
+adımı MagicMock bir cevap aldı (`'MagicMock' >= 400`). Sebep: iki modül de aynı
+`requests` nesnesini import ediyor, `requests.request` **tek** bir öznitelik — içteki
+patch dıştakini eziyor, çıkışta geri yazıyor. Bu yüzden testte webhook tarafı
+`SendWebhook._execute_without_channel` üzerinden patch'leniyor. Kural:
+*paylaşılan bir modülün özniteliğini patch'lerken aynı özniteliği hedefleyen ikinci bir
+patch'i iç içe açma.*
+
+### 3. Bilinen sınır
+
+`url` şeması webhook'taki `url_validator`'ü kullanıyor (tutarlılık), yani
+`https://api.example.com/{{trigger.id}}` gibi **ifade içeren** bir url yazma anında
+reddedilir. Şimdilik sorgu parametreleri/header'lar/gövde ifade kabul ediyor; url'de
+ifade gerektiğinde validator'ın `{{...}}` gördüğünde geçmesi gerekir — webhook
+şemasıyla birlikte tek yerden değiştirilmeli.
+
+---
+
 ## 2026-11-05 — Faz 1.D: DAG yürütücüsü ve kontrol akışı adımları
 
 **Kim:** OpenCode (worker) · **Branch:** `develop`

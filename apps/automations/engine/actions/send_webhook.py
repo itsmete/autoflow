@@ -11,6 +11,9 @@ class SendWebhook(BaseAction):
                 url = config.get('url')
                 headers = config.get('headers')
                 payload = config.get('payload')
+                # A webhook that never answers must not hold the run open; the same
+                # default the http_request action uses.
+                timeout = config.get('timeout', 10)
 
                 
                 try :
@@ -18,7 +21,8 @@ class SendWebhook(BaseAction):
                         method=method,
                         headers=headers,
                         url=url,
-                        json = payload
+                        json = payload,
+                        timeout = timeout
                         )
                 except Exception as e:
                         raise ExecutionError(f"An error occured while sending a webhook to {url} [{method}]")
