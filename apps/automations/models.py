@@ -361,6 +361,44 @@ def sync_steps_from_actions(automation):
         return steps, edges
 
 
+def sync_actions_from_steps(automation):
+        """
+        Rewrite the AutomationAction rows of `automation` from its action steps.
+
+        The mirror image of sync_steps_from_actions(), and what makes the graph
+        authorable today: the legacy executor still reads AutomationAction, so a
+        client that posts `steps` would otherwise produce an automation that never
+        runs. Every step_type='action' step becomes one row, in the order the steps
+        were created (which is the order they were submitted in).
+
+        Destructive by design - derived state, exactly like the reverse direction.
+        A branching graph loses its branching here: the old executor has no concept
+        of it, so its action steps run one after another until Faz 1.C executes the
+        graph itself (ROADMAP §5.1). Returns the rows.
+        """
+        with transaction.atomic():
+                automation.actions.all().delete()
+
+                steps = automation.steps.filter(
+                        step_type = StepTypes.ACTION
+                ).order_by('created_at')
+
+                actions = [
+                        AutomationAction.objects.create(
+                                automation = automation,
+                                action_type = step.action_type,
+                                channel = step.channel,
+                                template = step.template,
+                                order = idx,
+                                on_failure = step.on_failure,
+                                config = step.config,
+                        )
+                        for idx,step in enumerate(steps,start = 1)
+                ]
+
+        return actions
+
+
 
 
 class AutomationLog(BaseModel):

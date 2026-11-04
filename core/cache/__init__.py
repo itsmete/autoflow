@@ -98,6 +98,17 @@ REGISTRY = {
                         'CACHED': False,
                         'parent': ('automations.Automation', 'automation_id'),
                 },
+                # Faz 1.B: the step graph is serialized into the same Automation payload,
+                # so a step or edge write has to drop the parent's cache entry for
+                # exactly the same reason an action write does.
+                'AutomationStep': {
+                        'CACHED': False,
+                        'parent': ('automations.Automation', 'automation_id'),
+                },
+                'AutomationEdge': {
+                        'CACHED': False,
+                        'parent': ('automations.Automation', 'automation_id'),
+                },
                 'AutomationLog': {
                         'CACHED': False,
                         'parent': ('automations.Automation', 'automation_id'),

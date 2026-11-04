@@ -70,6 +70,60 @@ kenar sıralaması, `sync_steps_from_actions` (0/1/3 action, idempotent, action
 silinince grafiğin küçülmesi), ve `migrate_actions_to_steps`'in doğrudan testi
 (eski satırlar korunuyor, step'i olan otomasyon atlanıyor, ikinci çalıştırma no-op).
 
+### 6. T-102 — grafiği API'ye açmak (`serializers/steps.py`)
+
+Model vardı ama kimse ona ulaşamıyordu: `steps` yazmanın tek yolu Django shell'iydi.
+Bu adım grafiği hem okunur hem yazılır hâle getirdi, `actions` listesini bozmadan.
+
+**Çok biçimli adım doğrulaması.** `validate_step_config(step_type, config, ...)` —
+trigger/action'lardaki şema deseninin devamı. `action` adımı için `action_type`
+zorunlu, `CHANNEL_REQUIRED_ACTIONS` içindeyse kanal zorunlu, kanalın **ve** şablonun
+`channel_type`'ı `action_type` ile eşleşmeli, `config` ilgili action şemasından
+geçmeli. `filter` ve `branch` koşulları ayrı yazılmadı: `AutomationConditionSerializer`
+ile doğrulanıyor, yani otomasyon seviyesindeki koşullarla aynı kurallar. `wait`
+`duration` (pozitif int ya da `30s/15m/24h/7d`) veya `until` (ISO-8601 ya da
+`{{...}}`) ister. `set_variable` boş olmayan `variables` sözlüğü ister.
+
+`import` yönü bilinçli: `steps.py`, `automations.py`'yi **modül seviyesinde import
+etmiyor** — `automations.py` step serializer'ları için onu import ediyor, ters yön
+döngü olurdu. Koşul serializer'ı bu yüzden fonksiyon içinde import ediliyor.
+
+**Grafik doğrulaması (`validate_step_graph`).** Tek bir adım geçerli olup bütün
+akış yürüyemez olabilir; o yüzden bunlar adım serializer'ında değil, grafiğin
+tamamına bakan tek bir fonksiyonda: anahtar tekilliği, kenarların var olan
+adımlara işaret etmesi, kendine bağlanma yasağı, dal adımından çıkan kenarın
+`branch_key`'inin **bildirilmiş** olması (`default` her zaman serbest), giriş
+kenarı zorunluluğu, döngü tespiti (iteratif 3 renkli DFS — özyinelemeli sürüm
+derin bir zincirde 400 yerine 500 üretirdi) ve girişten erişilemeyen adım denetimi.
+`edges` verilmezse ve akışta dal adımı yoksa zincir **üretiliyor**; dal varsa
+açıkça isteniyor, çünkü hangi dala ne bağlanacağını tahmin etmenin doğru bir yolu
+yok.
+
+**Çift yazma.** `AutomationWriteSerializer` artık üç alanı da kabul ediyor ve
+`_write_flow()` her iki yönü de kapatıyor: `steps` geldiyse grafik yazılıyor,
+`actions` gelmediyse action satırları `sync_actions_from_steps()` ile ondan
+türetiliyor — yoksa grafikle kurulmuş bir otomasyon **hiç çalışmazdı**, çünkü
+bugünkü yürütücü `AutomationAction` okuyor. Yalnızca `actions` geldiyse liste
+yazılıp grafik `sync_steps_from_actions()` ile türetiliyor. Güncellemede temsil
+değiştirmek iki tarafı da siliyor; eski action satırlarını bırakmak, yürütücünün
+az önce değiştirilmiş akışın eski hâlini çalıştırması demekti.
+
+Grafik kalıcı olarak `AutomationReadSerializer`'da: liste ucu da döndürüyor, yani
+`actions` bilen bir istemci yazdığı zinciri grafik olarak, grafik yazan bir istemci
+dallanmayı okuyabiliyor.
+
+**Cache:** `AutomationStep`/`AutomationEdge` registry'ye `parent: Automation` olarak
+eklendi. İkisi de kendi başına cache'lenmiyor ama artık **Automation payload'unun
+içinde** serialize ediliyorlar; action satırları için geçerli olan gerekçe onlar
+için de geçerli.
+
+**Testler.** 63 yeni test (472 toplam): adım config doğrulaması (action/filter/
+branch/wait/set_variable, geçerli + geçersiz her dal), grafik doğrulaması (çift
+anahtar, bilinmeyen uç, self-loop, 2 ve 3 düğümlü döngü, erişilemeyen adım, eksik
+giriş kenarı, bildirilmemiş `branch_key`, üretilen zincir) ve API entegrasyonu
+(legacy `actions` → grafik, dallanan grafik → action satırları, temsil değiştirme +
+cache invalidation, şablon bağlama ve `channel_type` uyuşmazlığı).
+
 ---
 
 ## 2026-08-03 — Faz 1.A: karar katmanı (evaluator v2 + karar izi)
