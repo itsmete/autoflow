@@ -1,4 +1,5 @@
-from django.db import models
+from django.db import models, transaction
+from django.utils.translation import gettext_lazy as _
 from core.models import BaseModel
 import secrets
 from apps.channels.models import ChannelTypes
@@ -111,6 +112,24 @@ class OnFailureChoices(models.TextChoices):
         RETRY = 'retry' , 'Yeniden dene'
 
 
+class StepTypes(models.TextChoices):
+        # One carrier for every kind of step the graph can hold. 'action' is the
+        # AutomationAction special case, the rest are the reason the graph exists:
+        # branching, waiting and the AI/MCP steps cannot be expressed as a list.
+        ACTION = 'action', _("Aksiyon")
+        BRANCH = 'branch', _("Dallanma")
+        WAIT = 'wait', _("Bekleme")
+        FILTER = 'filter', _("Filtre")
+        SET_VARIABLE = 'set_variable', _("Değişken Ata")
+        LOOP = 'loop', _("Döngü")
+        RUN_AUTOMATION = 'run_automation', _("Alt Otomasyon")
+        HUMAN_APPROVAL = 'human_approval', _("İnsan Onayı")
+        AI_GENERATE = 'ai_generate', _("AI İçerik Üretimi")
+        AI_CLASSIFY = 'ai_classify', _("AI Sınıflandırma")
+        AI_AGENT = 'ai_agent', _("AI Ajan")
+        MCP_CALL = 'mcp_call', _("MCP Çağrısı")
+
+
 class AutomationStatus(models.TextChoices):
         SUCCESS = 'success' , 'Başarılı'
         FAILURE = 'failure' , 'Başarısız'
@@ -217,6 +236,129 @@ class AutomationAction(BaseModel):
 
         on_failure = models.CharField(choices=OnFailureChoices)
         config = models.JSONField()
+
+
+
+class AutomationStep(BaseModel):
+        # A node in the step graph. AutomationAction stays readable for a release
+        # (see ROADMAP §5.1): an action is just this model with step_type='action',
+        # which is why the fields overlap on purpose.
+        automation = models.ForeignKey(Automation,on_delete = models.CASCADE,related_name = 'steps',verbose_name = _("Otomasyon"))
+
+        step_type = models.CharField(choices = StepTypes.choices,max_length = 32,default = StepTypes.ACTION,verbose_name = _("Adım Tipi"))
+
+        # How edges and expressions refer to this step: "1", "send_sms". Unique per
+        # automation, because the graph has no other stable name to point at.
+        key = models.CharField(max_length = 64,verbose_name = _("Adım Anahtarı"))
+
+        # Only meaningful for step_type='action', but kept on the node rather than in
+        # config: it is what selects the provider.
+        action_type = models.CharField(choices = ActionTypes.choices,max_length = 32,blank = True,default = '',verbose_name = _("Aksiyon Tipi"))
+
+        config = models.JSONField(default = dict,blank = True,verbose_name = _("Adım Ayarları"))
+
+        channel = models.ForeignKey('channels.Channel',on_delete = models.SET_NULL,null = True,blank = True,related_name = 'automation_steps',verbose_name = _("Kanal"))
+
+        template = models.ForeignKey('Template',on_delete = models.SET_NULL,null = True,blank = True,related_name = 'automation_steps',verbose_name = _("Şablon"))
+
+        on_failure = models.CharField(choices = OnFailureChoices.choices,default = OnFailureChoices.STOP,max_length = 16,verbose_name = _("Hata Durumunda"))
+
+        # Canvas coordinates. The frontend needs somewhere to remember where a box was
+        # dragged; it is presentation data, so it is not part of the graph itself.
+        position = models.JSONField(null = True,blank = True,verbose_name = _("Canvas Konumu"))
+
+        class Meta:
+                verbose_name = _("Otomasyon Adımı")
+                verbose_name_plural = _("Otomasyon Adımları")
+                ordering = ['created_at']
+                constraints = [
+                        models.UniqueConstraint(fields = ['automation','key'],name = 'unique_step_key_per_automation'),
+                ]
+
+        def __str__(self):
+                return f"{self.automation.name} - {self.key} ({self.step_type})"
+
+
+
+class AutomationEdge(BaseModel):
+        # Branching and merging live here, not in a field on the step: "next step" as
+        # an integer cannot express a fan-out or a merge, and every attempt to encode
+        # one on top of order eventually re-implements a graph badly.
+        automation = models.ForeignKey(Automation,on_delete = models.CASCADE,related_name = 'edges',verbose_name = _("Otomasyon"))
+
+        # null = the entry edge: the graph starts here. The alternative (a synthetic
+        # START step) would make every query and every migration special-case a node
+        # that never executes.
+        from_step = models.ForeignKey(AutomationStep,on_delete = models.CASCADE,related_name = 'outgoing',null = True,blank = True,verbose_name = _("Kaynak Adım"))
+
+        to_step = models.ForeignKey(AutomationStep,on_delete = models.CASCADE,related_name = 'incoming',verbose_name = _("Hedef Adım"))
+
+        # 'true'/'false' for a branch step, a path name, or '' for a plain successor.
+        branch_key = models.CharField(max_length = 64,blank = True,default = '',verbose_name = _("Dal Anahtarı"))
+
+        order = models.PositiveIntegerField(default = 0,verbose_name = _("Sıra"))
+
+        class Meta:
+                verbose_name = _("Otomasyon Bağlantısı")
+                verbose_name_plural = _("Otomasyon Bağlantıları")
+                ordering = ['order','created_at']
+
+        def __str__(self):
+                return f"{self.automation.name}: {self.from_step.key if self.from_step else 'START'} -> {self.to_step.key}"
+
+
+
+def sync_steps_from_actions(automation):
+        """
+        Rewrite the step graph of `automation` from its AutomationAction rows.
+
+        A linear chain: one entry edge (from_step=None) into the first step, then
+        step[i-1] -> step[i]. This is the bridge that lets the actions API keep
+        working while the graph becomes the thing that executes (ROADMAP §5.1).
+
+        Destructive by design - the graph is derived state here, and deriving it
+        incrementally from rows that may have been reordered is how the two drift
+        apart. Returns (steps, edges).
+        """
+        with transaction.atomic():
+                automation.edges.all().delete()
+                automation.steps.all().delete()
+
+                actions = list(automation.actions.order_by('order','created_at'))
+
+                steps = [
+                        AutomationStep.objects.create(
+                                automation = automation,
+                                step_type = StepTypes.ACTION,
+                                key = str(idx),
+                                action_type = action.action_type,
+                                config = action.config,
+                                channel = action.channel,
+                                template = action.template,
+                                on_failure = action.on_failure,
+                        )
+                        for idx, action in enumerate(actions, start = 1)
+                ]
+
+                edges = []
+                if steps:
+                        edges.append(AutomationEdge.objects.create(
+                                automation = automation,
+                                from_step = None,
+                                to_step = steps[0],
+                                branch_key = '',
+                                order = 0,
+                        ))
+                        for i in range(1,len(steps)):
+                                edges.append(AutomationEdge.objects.create(
+                                        automation = automation,
+                                        from_step = steps[i - 1],
+                                        to_step = steps[i],
+                                        branch_key = '',
+                                        order = i,
+                                ))
+
+        return steps, edges
 
 
 

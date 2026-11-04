@@ -12,6 +12,66 @@ Mimari, stil ve kalıcı kurallar burada değil → `CLAUDE.md`.
 
 ---
 
+## 2026-11-04 — Faz 1.B: adım grafiği (`AutomationStep` + `AutomationEdge`)
+
+**Kim:** OpenCode (worker) · **Branch:** `develop`
+**Durum:** 409 test geçiyor (385'ten), 1 beklenen başarısızlık (motor saflığı 9'da sabit).
+
+Faz 1.A önce iki commit'e ayrıldı: `34f2a56` (kural motoru v2) ve `519fde5`
+(OpenCode/agent geçişi + `.coverage` artık ignore). Böylece grafik işi tek başına
+geri alınabilir bir commit olarak duruyor.
+
+### 1. Neden grafik, neden şimdi
+
+`AutomationAction` doğrusal bir liste ve dallanmayı `order` üzerine oturtmanın her
+yolu (dal id'si + sıra numarası) sonunda bir grafiği kötü kodlamış oluyor
+(`ROADMAP.md` §5.1). `AutomationStep` + `AutomationEdge` ikilisi dallanma,
+birleşme ve canvas'ı tek kavramla ifade ediyor: düğüm + kenar.
+
+### 2. Ne eklendi
+
+- `StepTypes` — 12 tip: `action`, `branch`, `wait`, `filter`, `set_variable`,
+  `loop`, `run_automation`, `human_approval`, `ai_generate`, `ai_classify`,
+  `ai_agent`, `mcp_call`. AI/MCP tipleri bugün sadece etiket; yürütücüleri
+  Faz 1.D'de gelecek. Enum'u şimdi açmak, sonradan migration'la choice eklemeyi
+  (SQLite'ta tablo yeniden kurulumu) gereksiz kılıyor.
+- `AutomationStep` — `automation`, `step_type`, `key`, `action_type`, `config`,
+  `channel`, `template`, `on_failure`, `position`. `(automation, key)` üzerinde
+  `unique_step_key_per_automation`.
+- `AutomationEdge` — `from_step` **null olabilir**: `None` = giriş kenarı. Sentetik
+  bir START düğümü, hiç yürümeyecek bir düğümü her sorguda ve her göçte özel
+  duruma sokardı.
+- `sync_steps_from_actions(automation)` — action listesinden grafiği türetir
+  (sil + yeniden kur, `transaction.atomic` içinde). Türetilmiş durum olduğu için
+  artımlı değil: sırası değişmiş satırlardan artımlı türetmek, ikisinin
+  ayrışmasının en kısa yolu.
+
+### 3. Göç — kopya, taşıma değil
+
+`0009` tabloları kurar, ardından `RunPython(migrate_actions_to_steps)` çalışır.
+`AutomationAction` **silinmiyor**; bir sürüm boyunca okunur kalacak. Göç yalnızca
+action'ı olup **hiç step'i olmayan** otomasyonlara dokunur — yarıda kalmış bir göç
+ya da ikinci çalıştırma grafiği çoğaltamaz. Ters göç `noop`: geri dönüş, yeni
+tabloları düşürmekle olur, action satırları hiç değişmediği için veri kaybı yok.
+
+### 4. `get_tenant()` üzerine not
+
+`AutomationStep`/`AutomationEdge` de `AutomationAction` gibi tenant/branch kolonu
+taşımıyor; `get_tenant()` **None** dönüyor ve kapsam `automation` üzerinden
+okunuyor. `instance.tenant_id` okumak `AttributeError` verir (AGENTS §7) —
+testler bunu açıkça sabitliyor (`test_automations_steps.py`).
+
+### 5. Testler
+
+24 yeni test (`tests/test_automations_steps.py`): varsayılanlar, `__str__`,
+`position` JSON gidiş-dönüşü, anahtar tekilliği (aynı otomasyonda `IntegrityError`,
+farklı otomasyonlarda serbest), giriş kenarı + `true`/`false`/`default` dallanması,
+kenar sıralaması, `sync_steps_from_actions` (0/1/3 action, idempotent, action
+silinince grafiğin küçülmesi), ve `migrate_actions_to_steps`'in doğrudan testi
+(eski satırlar korunuyor, step'i olan otomasyon atlanıyor, ikinci çalıştırma no-op).
+
+---
+
 ## 2026-08-03 — Faz 1.A: karar katmanı (evaluator v2 + karar izi)
 
 **Kim:** Claude (Opus 5) · **Branch:** `develop`

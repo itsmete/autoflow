@@ -12,7 +12,9 @@ from apps.automations.models import (
     Automation,
     AutomationAction,
     AutomationCondition,
+    AutomationEdge,
     AutomationLog,
+    AutomationStep,
     AutomationTrigger,
     Template,
 )
@@ -138,6 +140,42 @@ def make_action(automation, action_type="webhook", order=1, on_failure="stop",
         on_failure=on_failure,
         config=config,
         channel=channel,
+    )
+
+
+def make_step(automation, key="1", step_type="action", action_type="webhook",
+              config=None, channel=None, template=None, on_failure="stop",
+              position=None):
+    # action_type is only meaningful for step_type="action"; pass "" for the other
+    # step types so a fixture cannot imply a provider the step never uses.
+    if config is None:
+        config = {
+            "url": "https://example.com/hook",
+            "method": "POST",
+            "headers": {},
+            "payload": {},
+        }
+    return AutomationStep.objects.create(
+        automation=automation,
+        step_type=step_type,
+        key=key,
+        action_type=action_type,
+        config=config,
+        channel=channel,
+        template=template,
+        on_failure=on_failure,
+        position=position,
+    )
+
+
+def make_edge(automation, from_step, to_step, branch_key="", order=0):
+    # from_step=None is the entry edge into the graph, not a missing argument.
+    return AutomationEdge.objects.create(
+        automation=automation,
+        from_step=from_step,
+        to_step=to_step,
+        branch_key=branch_key,
+        order=order,
     )
 
 
