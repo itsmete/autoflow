@@ -12,6 +12,74 @@ Mimari, stil ve kalıcı kurallar burada değil → `CLAUDE.md`.
 
 ---
 
+## 2026-11-05 — Faz 1.E (2/2) + Faz 1.F: `automation_completed`, `field_changed`, motor saflığı
+
+**Kim:** OpenCode (worker) · **Branch:** `develop`
+**Durum:** 311 test (T-106/T-107 kapsamındaki 6 modül) yeşil, `test_engine_purity` 0 ihlal.
+Görev T-106 + T-107, ardından `reviewer` geçişinden gelen 4 bulgu.
+
+### 1. `automation_completed` — Zincirleme (ROADMAP §4.1)
+
+Bir koşu bittiğinde ona "abone olmuş" otomasyonları başlatır. Trigger config'i
+`{"source_automation_id": <uuid>, "trigger_on_status": "success|failure|skipped"}`.
+Kaynak **JSON içinde id olarak** duruyor, yani tenant sınırını hiçbir foreign key
+koruyamaz — bu yüzden iki yerde elle kontrol edilir:
+
+- `runtime.notify_automation_completed`: fan-out sorgusu `automation__tenant_id =
+  automation.tenant_id` ile daralır; başka kiracının trigger'ı hiç görülmez.
+- `AutomationWriteSerializer._validate_tenant_boundary`: yazma anında `source_automation_id`
+  başka kiracıyı gösteriyorsa 400.
+
+Döngü koruması `_chain_depth` ile: derinlik payload'ın içinde taşınır, böylece Celery
+sınırından sağ çıkar. **Negatif derinlik artık `max(0, ...)` ile kırpılıyor** — aksi
+hâlde `-999999` yazan bir payload `depth >= MAX_CHAIN_DEPTH` kontrolünü her hop'ta
+False yapar ve A→B→A çiftini sonsuz fan-out'a çevirirdi.
+
+### 2. `field_changed` — Sinyal tetikleyicisi genişlemesi
+
+`SIGNAL_EVENT_MAP`'e `field_changed` eklendi; `post_save` üzerinden yürür, farkı
+handler'da: `pre_save`'te alınan anlık görüntü ile yeni değerler karşılaştırılır ve
+yalnızca config'te istenen alanlar değiştiyse tetiklenir. Sinyal **adları** tutulur,
+nesneleri değil — `django.db.models.signals` import'u motoru Django'suz kullanılamaz
+yapardı.
+
+### 3. Faz 1.F — motor saflığı tamam
+
+Motorun Django/DRF/Celery'ye dokunduğu her yer `apps/automations/runtime.py`'ye taşındı:
+satır okuma (`get_automation`), log yazma (`create_log`), sinyal çözümleme
+(`get_django_signal`), model serialize etme (`serialize_model_instance`), Celery
+gönderimi (`dispatch_automation`). Motor bunlara
+`importlib.import_module('apps.automations.runtime')` ile **çalışma anında** ulaşır;
+modül üstünde import yok, yani `engine/` Django kurulmadan da import edilebilir.
+`tests/test_engine_purity.py` artık 0 ihlal görüyor ve `@unittest.expectedFailure`
+işareti kaldırıldı — işaret kendini temizledi, tam da tasarlandığı gibi.
+
+### 4. Reviewer sertleştirmesi (4 bulgu)
+
+- **Kiracı sınırı yazma anında:** `AutomationWriteSerializer._validate_tenant_boundary`
+  `actions`/`steps` içindeki `channel` ve `template` ile `triggers` içindeki
+  `source_automation_id`'yi otomasyonun kiracısına karşı doğrular. Channel pk'si
+  global olarak tekil ve kiracıya kör olduğu için, bu kontrol olmadan A kiracısının
+  owner'ı B'nin kimlik bilgileriyle çalışan bir otomasyon yazabiliyordu. super_admin
+  için de çalışır: bu payload'ın şekliyle ilgili, kimin gönderdiğiyle değil.
+- **`_chain_depth` alt sınırı:** yukarıdaki `max(0, ...)`.
+- **`http_request` timeout sınırı:** şemada `1 <= timeout <= 60` (`validate_timeout`,
+  reddeden validator sözleşmesine uygun — `False` döndürmek sessizce yutulurdu).
+  Motorda ayrıca `max(1, min(int(raw), 60))`: config doğrudan DB'ye de yazılabilir,
+  ve `0` requests'i süresiz bekletir — alanın var olma sebebi tam olarak bu. Okunamayan
+  değer `ExecutionError`; sessiz varsayılan, çalışmamış bir config'i çalışmış gibi
+  gösterirdi.
+- **`requests.request` etrafında `(RequestException, ValueError)`:** geçersiz bir
+  timeout/url `ValueError` fırlatır ve adımı 500'e çevirirdi.
+
+### 5. Denenip başarısız olan yol
+
+Kiracı kontrolünü `validate()` içine, `user = ...` satırından **sonra** koymak cazipti;
+ama o noktadan sonra `super_admin` erken `return` ediyor ve kontrol super_admin için
+hiç çalışmazdı. Grafik kontrolleriyle aynı yere — erken `return`'ün **üstüne** — kondu.
+
+---
+
 ## 2026-11-05 — Faz 1.E (1/2): `http_request` aksiyonu ve cevabın adım çıktısına yazılması
 
 **Kim:** OpenCode (worker) · **Branch:** `develop`

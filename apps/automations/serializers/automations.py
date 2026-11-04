@@ -195,6 +195,57 @@ class AutomationWriteSerializer(serializers.ModelSerializer):
                 fields = ['name','allowed_roles','metadata','tenant','branch','triggers','conditions','actions','steps','edges','is_active']
 
 
+        def _validate_tenant_boundary(self,data):
+                """
+                Every row an automation points at must belong to the automation's tenant.
+
+                The foreign keys themselves are tenant-blind (a Channel pk is globally
+                unique), so without this an owner of tenant A can hand their automation
+                a Channel, a Template - or in a trigger config, a source automation -
+                that belongs to tenant B, and the run then uses B's credentials. The
+                runtime already filters `automation_completed` fan-out by tenant, but a
+                payload that is refused up front is much cheaper than a run that quietly
+                does the wrong thing.
+
+                Runs for super_admin too: this is about the shape of the payload, not
+                about who may send it.
+                """
+                if self.instance is not None:
+                        target_tenant = data.get('tenant') or self.instance.tenant
+                else:
+                        target_tenant = data.get('tenant')
+
+                if target_tenant is None:
+                        return
+
+                for field in ('actions','steps'):
+                        for item in data.get(field) or []:
+                                channel = item.get('channel')
+                                if channel is not None and channel.tenant_id \
+                                                and channel.tenant_id != target_tenant.id:
+                                        raise serializers.ValidationError(
+                                                {field : _("Kanal farklı bir kiracıya ait.")}
+                                        )
+
+                                template = item.get('template')
+                                if template is not None and template.tenant_id \
+                                                and template.tenant_id != target_tenant.id:
+                                        raise serializers.ValidationError(
+                                                {field : _("Şablon farklı bir kiracıya ait.")}
+                                        )
+
+                for item in data.get('triggers') or []:
+                        if item.get('trigger_type') != 'automation_completed':
+                                continue
+
+                        source_id = (item.get('config') or {}).get('source_automation_id')
+                        source = Automation.objects.filter(id = source_id).first() if source_id else None
+
+                        if source is not None and source.tenant_id != target_tenant.id:
+                                raise serializers.ValidationError(
+                                        {'triggers' : _("Kaynak otomasyon farklı bir kiracıya ait.")}
+                                )
+
         def validate(self,data):
 
                 # The graph checks run for EVERY caller, super_admin included: they are
@@ -218,6 +269,8 @@ class AutomationWriteSerializer(serializers.ModelSerializer):
                         # Replaced by the normalized list: linear flows get their chain
                         # generated here, so create/update never has to guess.
                         data['edges'] = validate_step_graph(steps,edges)
+
+                self._validate_tenant_boundary(data)
 
                 user = self.context.get('request').user
 

@@ -19,6 +19,33 @@ class HttpRequestAction(BaseAction):
         provider_class = None
         requires_channel = False
 
+        @staticmethod
+        def _timeout(raw_timeout):
+                """
+                Clamp the timeout into [1, 60] seconds.
+
+                The serializer already rejects out-of-range values, but a step config
+                can also be written straight to the DB (migration, fixture, a future
+                non-DRF client), so the engine cannot trust it. 0 or a negative value
+                would make `requests` wait forever on a hung host - the one thing the
+                field exists to prevent - and a huge value would pin the worker.
+                An unusable value is an error, not a silent default: a config the
+                engine cannot honour should not look like it ran.
+                """
+                # A missing timeout is not an error: the schema's default only exists
+                # for configs that went through the serializer.
+                if raw_timeout is None:
+                        return 10
+
+                try:
+                        seconds = int(raw_timeout)
+                except (TypeError,ValueError):
+                        raise ExecutionError(
+                                f"HTTP request timeout must be an integer, got {raw_timeout!r}"
+                        )
+
+                return max(1,min(seconds,60))
+
         def _execute_without_channel(self,prepared_data):
                 url = prepared_data.get('url')
 
@@ -30,7 +57,7 @@ class HttpRequestAction(BaseAction):
                 # None, not {}: an empty dict would append a bare "?" to the url.
                 params = prepared_data.get('query_params') or None
                 body = prepared_data.get('body')
-                timeout = prepared_data.get('timeout') or 10
+                timeout = self._timeout(prepared_data.get('timeout'))
 
                 try:
                         resp = requests.request(
@@ -41,7 +68,7 @@ class HttpRequestAction(BaseAction):
                                 json = body if method in ('POST','PUT','PATCH','DELETE') and body else None,
                                 timeout = timeout,
                         )
-                except requests.RequestException as e:
+                except (requests.RequestException,ValueError) as e:
                         raise ExecutionError(str(e)) from e
 
                 # 4xx/5xx are not "the call worked but returned something sad": the

@@ -1,26 +1,23 @@
 """
 Engine purity: apps/automations/engine/ must not depend on Django.
 
-This is a MARKER FOR PHASE 1, not a passing test. The engine is meant to become a
-framework-free execution core that two different consumers can share - the
-multi-tenant AutoFlow API, and a single-user local orchestrator whose persistence
-and scheduling look nothing like Django's. It cannot be shared while it reaches
-into the ORM and into Celery on its own.
+The engine is meant to be a framework-free execution core that two different
+consumers can share - the multi-tenant AutoFlow API, and a single-user local
+orchestrator whose persistence and scheduling look nothing like Django's. It cannot
+be shared while it reaches into the ORM and into Celery on its own.
 
 The rule is the same one CLAUDE.md section 4 already states for `core` ("core
 imports nothing from outside"), with a new subject.
 
-The test is marked expectedFailure, so:
-
-  * today it does not break the suite - the violations below are known,
-  * and the day Phase 1 makes it pass, unittest reports an *unexpected success*,
-    which fails the run and forces whoever fixed it to delete the decorator.
-
-A marker that cleans itself up.
+This started as an @unittest.expectedFailure marker for Phase 1: it did not break the
+suite while the violations were known, and the day the work finished unittest would
+report an unexpected success, failing the run and forcing the decorator to be
+deleted. Faz 1.E finished the job - the engine is pure Python, and the test is
+expected to pass. Everything the engine still needs a framework for (rows, logs,
+dispatch, Django signals) now lives in apps/automations/runtime.py.
 """
 import ast
 import pathlib
-import unittest
 
 from django.test import SimpleTestCase
 
@@ -124,15 +121,17 @@ class EnginePurityTests(SimpleTestCase):
             )
 
     def test_the_violation_count_only_ever_falls(self):
-        # 9 violations after Faz 1.A, 7 after Faz 1.C, 5 after Faz 1.D (the action
-        # base lost its gettext import, the executor lost the models import). A
-        # ceiling cannot rot the way a fixed list does, and it still fails the moment
-        # somebody adds a new Django import to the engine.
+        # 9 violations after Faz 1.A, 7 after Faz 1.C, 5 after Faz 1.D, and 0 after
+        # Faz 1.E: the last five moved into apps/automations/runtime.py, the Django
+        # adapter the engine now reaches through importlib. The ceiling stays here
+        # rather than being deleted with the expectedFailure marker, so the number
+        # has nowhere to go but up if a framework import creeps back in.
         total = sum(len(find_framework_imports(module)) for module in engine_modules())
-        self.assertLessEqual(total, 5)
+        self.assertEqual(total, 0)
 
-    @unittest.expectedFailure
     def test_the_engine_does_not_import_django(self):
+        # Faz 1.E: this used to be @unittest.expectedFailure, a self-cleaning marker.
+        # It cleared itself - the engine is now pure Python.
         violations = []
 
         for module in engine_modules():
@@ -144,3 +143,4 @@ class EnginePurityTests(SimpleTestCase):
             [],
             "engine/ still depends on the framework:\n  " + "\n  ".join(violations),
         )
+

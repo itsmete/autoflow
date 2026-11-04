@@ -1121,6 +1121,65 @@ class AutomationGraphAPITests(CacheTestMixin, TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    # -- tenant boundary -------------------------------------------------------
+
+    def test_a_channel_from_another_tenant_is_rejected(self):
+        # A Channel pk is globally unique and tenant-blind, so the FK alone would let
+        # this automation send with someone else's credentials.
+        other_tenant = factories.make_tenant(name="Globex")
+        foreign_channel = factories.make_channel(other_tenant, name="Theirs")
+
+        response = self.client.post('/api/v1/automations/', self.payload(actions=[
+            {"action_type": "email", "channel": str(foreign_channel.id),
+             "order": 1, "on_failure": "stop",
+             "config": {"to": "a@b.com", "subject": "Hi", "body": "Hello"}},
+        ]), format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("actions", self.fields_of(response))
+
+    def test_a_step_channel_from_another_tenant_is_rejected(self):
+        other_tenant = factories.make_tenant(name="Globex")
+        foreign_channel = factories.make_channel(other_tenant, name="Theirs")
+
+        response = self.client.post('/api/v1/automations/', self.payload(steps=[
+            {"key": "mail", "step_type": "action", "action_type": "email",
+             "channel": str(foreign_channel.id),
+             "config": {"to": "a@b.com", "subject": "Hi", "body": "Hello"}},
+        ]), format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("steps", self.fields_of(response))
+
+    def test_a_template_from_another_tenant_is_rejected(self):
+        other_tenant = factories.make_tenant(name="Globex")
+        foreign_template = factories.make_template(other_tenant, name="Theirs")
+
+        response = self.client.post('/api/v1/automations/', self.payload(actions=[
+            {"action_type": "email", "channel": str(self.email_channel.id),
+             "template": str(foreign_template.id), "order": 1, "on_failure": "stop",
+             "config": {"to": "a@b.com", "subject": "Hi", "body": "Hello"}},
+        ]), format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("actions", self.fields_of(response))
+
+    def test_a_chained_trigger_naming_another_tenants_automation_is_rejected(self):
+        # source_automation_id lives in a JSON config, so nothing but this check
+        # stands between a tenant and a fan-out from someone else's run.
+        other_tenant = factories.make_tenant(name="Globex")
+        outsider = factories.make_automation(other_tenant, name="Outsider")
+
+        response = self.client.post('/api/v1/automations/', self.payload(
+            triggers=[{"trigger_type": "automation_completed", "initial_data": {},
+                       "config": {"source_automation_id": str(outsider.id)}}],
+            actions=[{"action_type": "webhook", "order": 1, "on_failure": "stop",
+                      "config": dict(WEBHOOK_CONFIG)}],
+        ), format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("triggers", self.fields_of(response))
+
     # -- switching representations --------------------------------------------
 
     def test_switching_from_actions_to_a_graph_replaces_the_flow_and_the_cache(self):

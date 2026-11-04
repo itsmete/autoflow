@@ -155,6 +155,82 @@ class TriggerSerializerTests(TestCase):
         with self.assertRaises(ValidationError):
             serializer.validate_config({"model_name": "tenants.Branch", "event_type": "exploded"})
 
+    # -- signal: field_changed (Faz 1.E) ---------------------------------------
+
+    def _signal(self, config):
+        return get_trigger_serializer_class("signal")().validate_config(config)
+
+    def test_field_changed_is_an_accepted_event(self):
+        # SIGNAL_EVENT_MAP is the single source of truth for the choices, and it had
+        # to grow without the engine importing django (tests/test_engine_purity.py).
+        data = self._signal({
+            "model_name": "tenants.Branch",
+            "event_type": "field_changed",
+            "field": "name",
+        })
+        self.assertEqual(data["field"], "name")
+
+    def test_field_changed_needs_a_watched_field(self):
+        # Without one the trigger would be stored, connected and never fire.
+        with self.assertRaises(ValidationError):
+            self._signal({"model_name": "tenants.Branch", "event_type": "field_changed"})
+
+        with self.assertRaises(ValidationError):
+            self._signal({
+                "model_name": "tenants.Branch",
+                "event_type": "field_changed",
+                "field": "   ",
+            })
+
+    def test_field_changed_comparison_values_may_be_scalars_of_any_type(self):
+        data = self._signal({
+            "model_name": "tenants.Branch",
+            "event_type": "field_changed",
+            "field": "name",
+            "from_value": 1,
+            "to_value": "ready",
+        })
+
+        self.assertEqual(data["from_value"], 1)
+        self.assertEqual(data["to_value"], "ready")
+
+    def test_field_changed_comparison_values_must_not_be_structures(self):
+        with self.assertRaises(ValidationError):
+            self._signal({
+                "model_name": "tenants.Branch",
+                "event_type": "field_changed",
+                "field": "name",
+                "to_value": {"nested": 1},
+            })
+
+    # -- automation_completed (Faz 1.E) ----------------------------------------
+
+    def _completed(self, config):
+        return get_trigger_serializer_class("automation_completed")().validate_config(config)
+
+    def test_automation_completed_defaults_to_success(self):
+        source = "6f1b0d5a-6a10-4a3a-9d6b-9f5d2f6b9c11"
+        self.assertEqual(
+            self._completed({"source_automation_id": source}),
+            {"source_automation_id": source, "trigger_on_status": "success"},
+        )
+
+    def test_automation_completed_accepts_the_other_finished_statuses(self):
+        source = "6f1b0d5a-6a10-4a3a-9d6b-9f5d2f6b9c11"
+
+        for status in ("success", "failure", "skipped"):
+            self._completed({"source_automation_id": source, "trigger_on_status": status})
+
+        with self.assertRaises(ValidationError):
+            self._completed({"source_automation_id": source, "trigger_on_status": "pending"})
+
+    def test_automation_completed_needs_a_uuid_shaped_source(self):
+        with self.assertRaises(ValidationError):
+            self._completed({})
+
+        with self.assertRaises(ValidationError):
+            self._completed({"source_automation_id": "not-a-uuid"})
+
     # -- webhook / manual ------------------------------------------------------
 
     def test_webhook_and_manual_configs_are_free_form(self):

@@ -34,3 +34,22 @@ def validate_email_wrapped(value):
                 raise
 
 url_validator = URLValidator()
+
+
+# Bounds for a per-request timeout. Below 1 a value is not a timeout at all; above 60
+# an external call can hold a Celery worker for a minute per step, and the run is
+# already lost by then. Rejected at authoring time so the engine never has to guess.
+MIN_TIMEOUT_SECONDS = 1
+MAX_TIMEOUT_SECONDS = 60
+
+
+def validate_timeout(value):
+        try:
+                seconds = int(value)
+        except (TypeError,ValueError):
+                raise ValidationError("Timeout must be an integer number of seconds")
+
+        if seconds < MIN_TIMEOUT_SECONDS or seconds > MAX_TIMEOUT_SECONDS:
+                raise ValidationError(
+                        f"Timeout must be between {MIN_TIMEOUT_SECONDS} and {MAX_TIMEOUT_SECONDS} seconds"
+                )

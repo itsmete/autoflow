@@ -2,7 +2,7 @@
 from ..base import BaseConfigSerializer
 
 from django.utils.translation import gettext_lazy as _
-from ..validators import url_validator
+from ..validators import url_validator, validate_timeout
 
 
 
@@ -47,6 +47,7 @@ class HttpRequestActionSerializer(BaseConfigSerializer):
                 "timeout" : {
                         "type" : "integer",
                         "required" : False,
-                        "default" : 10
+                        "default" : 10,
+                        "validator" : validate_timeout
                 },
         }

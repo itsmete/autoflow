@@ -851,6 +851,50 @@ class HttpRequestActionTests(TestCase):
                                 "http_request",
                         )
 
+        def test_the_schema_rejects_an_out_of_range_timeout(self):
+                from apps.automations.serializers.steps import validate_step_config
+
+                for timeout in (0,-1,120):
+                        with self.assertRaises(Exception, msg=f"timeout={timeout}"):
+                                validate_step_config(
+                                        "action",
+                                        {"url" : "https://api.example.com/","timeout" : timeout},
+                                        "http_request",
+                                )
+
+                # The bounds themselves are legal.
+                for timeout in (1,60):
+                        config = validate_step_config(
+                                "action",
+                                {"url" : "https://api.example.com/","timeout" : timeout},
+                                "http_request",
+                        )
+                        self.assertEqual(config["timeout"], timeout)
+
+        def test_the_engine_clamps_a_timeout_that_bypassed_the_schema(self):
+                # A config written straight to the DB never met the serializer, and 0
+                # would make requests() wait forever - the exact thing the field exists
+                # to prevent.
+                step = factories.make_step(
+                        self.automation, key="call", action_type="http_request",
+                        config={"url":"https://api.example.com/","timeout" : 0},
+                )
+                factories.make_edge(self.automation, None, step)
+
+                with patch(HTTP_REQUEST, return_value=http_response(200)) as http:
+                        result = self._run()
+
+                self.assertEqual(result.status, RESULT_SUCCESS)
+                self.assertEqual(http.call_args.kwargs["timeout"], 1)
+
+                step.config = {"url":"https://api.example.com/","timeout" : 9000}
+                step.save()
+
+                with patch(HTTP_REQUEST, return_value=http_response(200)) as http:
+                        self._run()
+
+                self.assertEqual(http.call_args.kwargs["timeout"], 60)
+
         def test_the_response_is_captured_into_the_step_output(self):
                 call = factories.make_step(
                         self.automation, key="call", action_type="http_request",

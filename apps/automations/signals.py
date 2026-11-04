@@ -1,18 +1,53 @@
-from django.db.models.signals import post_save,post_delete
+from django.db.models.signals import post_save,post_delete,pre_save
 from django.dispatch import receiver
+
+from collections.abc import Mapping
 
 
 from .engine.signal_handler import create_signal_handler
 from .engine.signal_registry import get_signal_for_event
+from .runtime import resolve_model,serialize_model_instance
 from .scheduling import delete_periodic_task,set_periodic_task_enabled,sync_periodic_task
 
 from .models import AutomationTrigger,TriggerType,Automation
-from django.apps import apps
 
 import logging
 
 
 logger = logging.getLogger(__name__)
+
+
+def capture_field_changed_snapshot(sender,instance,**kwargs):
+        """
+        Remember what the row looked like before this save.
+
+        A post_save receiver cannot answer "did `status` change?" - the old values are
+        already gone. So `field_changed` watches a pre_save on the ONE model it was
+        asked about (connected below, not project-wide) and parks a serialized copy on
+        the instance; the post_save handler compares against it.
+
+        `_state.adding`, not `instance.pk`: BaseModel declares id with
+        default=uuid.uuid4, so the pk is populated long before a row exists.
+        """
+        if instance._state.adding or not instance.pk:
+                return
+
+        try:
+                old = sender.objects.filter(pk = instance.pk).first()
+        except Exception:
+                # Unmigrated database, or a table that stopped existing. A trigger
+                # registration must never take the save down with it.
+                logger.debug(
+                        "automations: no previous row for %s, skipping snapshot",
+                        sender.__name__,
+                )
+                return
+
+        if old is None:
+                return
+
+        instance._autoflow_prev = serialize_model_instance(old)
+
 
 def register_existing_signal_triggers(data : AutomationTrigger = None):
 
@@ -23,21 +58,48 @@ def register_existing_signal_triggers(data : AutomationTrigger = None):
                 model_name = obj.config.get('model_name')
                 event = obj.config.get('event_type')
 
-                # obj is the TRIGGER; the orchestrator looks the row up as
-                # Automation.objects.get(id=...), so passing obj.id sent it a trigger
-                # pk and every signal-driven run died on Automation.DoesNotExist -
-                # logged as "Automation not found" and otherwise invisible.
-                handler = create_signal_handler(obj.automation_id, event=str(event))
                 try:
-                        sender_model = apps.get_model(model_name)
+                        sender_model = resolve_model(model_name)
                 except LookupError as e:
                         logger.error(f"Lookup error due to Invalid Model name/path. model_name = {model_name}")
                         continue
 
+                if event == 'field_changed':
+                        # Connected per watched model, with dispatch_uid, rather than as
+                        # a senderless global receiver: the global version would run a
+                        # SELECT on every save of every model in the project, which is
+                        # the whole database paying for one trigger.
+                        pre_save.connect(
+                                capture_field_changed_snapshot,
+                                sender = sender_model,
+                                dispatch_uid = f"automation_presave_{model_name}",
+                        )
+
+                # obj is the TRIGGER; the orchestrator looks the row up as
+                # Automation.objects.get(id=...), so passing obj.id sent it a trigger
+                # pk and every signal-driven run died on Automation.DoesNotExist -
+                # logged as "Automation not found" and otherwise invisible.
+                #
+                # config is passed on because `field_changed` needs the watched field
+                # and its optional comparison values; the handler holds no model.
+                handler = create_signal_handler(
+                        obj.automation_id,
+                        event = str(event),
+                        config = obj.config if isinstance(obj.config,Mapping) else {},
+                )
 
                 signal = get_signal_for_event(event)
                 if signal:
-                        signal.connect(handler,sender=sender_model,dispatch_uid=f"automation_{obj.automation.id}_{model_name}_{event}")
+                        # weak=False, and it is not optional: a receiver connected
+                        # weakly to nothing but Django's registry is collected the
+                        # moment this loop drops the local `handler`, so the trigger
+                        # was stored, reported as connected, and silently never fired.
+                        signal.connect(
+                                handler,
+                                sender = sender_model,
+                                weak = False,
+                                dispatch_uid = f"automation_{obj.automation.id}_{model_name}_{event}",
+                        )
 
 
 

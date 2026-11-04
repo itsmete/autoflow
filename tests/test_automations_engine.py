@@ -23,7 +23,7 @@ from apps.automations.engine.executor import AutomationExecutor
 from apps.automations.engine.orchestrator import AutomationOrchestrator
 from apps.automations.engine.signal_registry import get_signal_for_event
 from apps.automations.engine.template_manager import TemplateManager
-from apps.automations.models import ActionTypes, AutomationLog, AutomationStatus
+from apps.automations.models import ActionTypes, Automation, AutomationLog, AutomationStatus
 from tests import factories
 
 
@@ -547,3 +547,312 @@ class SignalHandlerTests(TestCase):
         automation_id, payload = mock_delay.call_args[0]
         self.assertIsInstance(automation_id, str)
         json.dumps(payload)  # must not raise
+
+
+class FieldChangedSignalTests(TestCase):
+    """
+    `field_changed`: fire when one field's VALUE changes, not when the row is saved.
+
+    The old value cannot be read after the fact, so the wiring takes a snapshot in
+    pre_save (apps/automations/signals.py) and compares against it here. These tests
+    drive the handler directly; FieldChangedWiringTests below proves the snapshot is
+    actually taken.
+    """
+
+    def setUp(self):
+        self.tenant = factories.make_tenant()
+        self.automation = factories.make_automation(self.tenant)
+        self.branch = factories.make_branch(self.tenant)
+
+    def _handler(self, **config):
+        from apps.automations.engine.signal_handler import create_signal_handler
+
+        return create_signal_handler(
+            self.automation.id, event="field_changed", config={"field": "name", **config},
+        )
+
+    def _saved_with(self, handler, previous_name, new_name, **kwargs):
+        instance = self.branch
+        instance._autoflow_prev = {"name": previous_name}
+        instance.name = new_name
+        handler(sender=None, instance=instance, created=False, **kwargs)
+        return instance
+
+    @patch("apps.automations.engine.signal_handler.run_automation.delay")
+    def test_a_changed_field_dispatches_the_change(self, mock_delay):
+        self._saved_with(self._handler(), "Old", "New")
+
+        automation_id, payload = mock_delay.call_args[0]
+        self.assertEqual(automation_id, str(self.automation.id))
+        self.assertEqual(payload["_changes"], {"name": {"from": "Old", "to": "New"}})
+        # The new values are in the payload too, so a condition can compare them
+        # without reaching into `_changes`.
+        self.assertEqual(payload["name"], "New")
+
+    @patch("apps.automations.engine.signal_handler.run_automation.delay")
+    def test_a_save_that_left_the_field_alone_is_ignored(self, mock_delay):
+        # The whole point: an `updated` trigger fires here, a `field_changed` one must
+        # not.
+        handler = self._handler()
+        instance = self.branch
+        instance._autoflow_prev = {"name": instance.name}
+        instance.address = "a new address"
+        handler(sender=None, instance=instance, created=False)
+
+        mock_delay.assert_not_called()
+
+    @patch("apps.automations.engine.signal_handler.run_automation.delay")
+    def test_a_create_has_no_previous_value_and_is_ignored(self, mock_delay):
+        handler = self._handler()
+        handler(sender=None, instance=self.branch, created=True)
+
+        mock_delay.assert_not_called()
+
+    @patch("apps.automations.engine.signal_handler.run_automation.delay")
+    def test_no_snapshot_means_no_guessing(self, mock_delay):
+        # Without a pre_save snapshot the handler cannot know what changed, and
+        # "assume everything changed" would fire on every unrelated save.
+        handler = self._handler()
+        handler(sender=None, instance=self.branch, created=False)
+
+        mock_delay.assert_not_called()
+
+    @patch("apps.automations.engine.signal_handler.run_automation.delay")
+    def test_a_previous_value_can_be_supplied_in_kwargs(self, mock_delay):
+        handler = self._handler()
+        instance = self.branch
+        instance.name = "New"
+        handler(sender=None, instance=instance, created=False, previous_data={"name": "Old"})
+
+        self.assertEqual(mock_delay.call_args[0][1]["_changes"]["name"]["from"], "Old")
+
+    @patch("apps.automations.engine.signal_handler.run_automation.delay")
+    def test_from_value_narrows_the_transition(self, mock_delay):
+        self._saved_with(self._handler(from_value="Old"), "Old", "New")
+        mock_delay.assert_called_once()
+
+        mock_delay.reset_mock()
+        self._saved_with(self._handler(from_value="Something else"), "Old", "New")
+        mock_delay.assert_not_called()
+
+    @patch("apps.automations.engine.signal_handler.run_automation.delay")
+    def test_to_value_narrows_the_target(self, mock_delay):
+        self._saved_with(self._handler(to_value="New"), "Old", "New")
+        mock_delay.assert_called_once()
+
+        mock_delay.reset_mock()
+        self._saved_with(self._handler(to_value="Elsewhere"), "Old", "New")
+        mock_delay.assert_not_called()
+
+    @patch("apps.automations.engine.signal_handler.run_automation.delay")
+    def test_the_string_form_of_a_comparison_value_matches(self, mock_delay):
+        # A config written by hand says "True" while the column holds a boolean;
+        # refusing that would be surprising rather than safe.
+        handler = self._handler(field="is_hq", from_value="False", to_value="True")
+        instance = self.branch
+        instance._autoflow_prev = {"is_hq": False}
+        instance.is_hq = True
+        handler(sender=None, instance=instance, created=False)
+
+        mock_delay.assert_called_once()
+
+
+class FieldChangedWiringTests(TestCase):
+    """The pre_save snapshot, connected by register_existing_signal_triggers."""
+
+    def setUp(self):
+        self.automation = None
+
+    def tearDown(self):
+        from django.db.models.signals import post_save, pre_save
+        from apps.tenants.models import Tenant
+
+        if self.automation is None:
+            return
+
+        post_save.disconnect(
+            sender=Tenant,
+            dispatch_uid=f"automation_{self.automation.id}_tenants.Tenant_field_changed",
+        )
+        pre_save.disconnect(
+            sender=Tenant, dispatch_uid="automation_presave_tenants.Tenant",
+        )
+
+    @patch("apps.automations.engine.signal_handler.run_automation.delay")
+    def test_a_real_save_only_fires_when_the_watched_field_changes(self, mock_delay):
+        tenant = factories.make_tenant()
+        self.automation = factories.make_automation(tenant)
+        factories.make_trigger(self.automation, trigger_type="signal", config={
+            "model_name": "tenants.Tenant",
+            "event_type": "field_changed",
+            "field": "name",
+        })
+
+        tenant.slug = "unrelated-change"
+        tenant.save()
+        mock_delay.assert_not_called()
+
+        tenant.name = "Renamed"
+        tenant.save()
+
+        mock_delay.assert_called_once()
+        payload = mock_delay.call_args[0][1]
+        self.assertEqual(payload["_changes"]["name"]["to"], "Renamed")
+
+
+class AutomationCompletedChainingTests(TestCase):
+    """
+    `automation_completed`: the Sub-Zap case (ROADMAP section 4.1).
+
+    A -> B is the feature; A -> B -> A is the bug it comes with. The depth counter
+    travels inside the payload, so it survives the Celery boundary.
+    """
+
+    def setUp(self):
+        self.tenant = factories.make_tenant()
+        self.source = factories.make_automation(self.tenant, name="Source")
+        self.target = factories.make_automation(self.tenant, name="Target")
+
+        factories.make_action(self.source, order=1)
+        factories.make_action(self.target, order=1)
+
+    def _follow(self, follower, source, status="success"):
+        return factories.make_trigger(follower, trigger_type="automation_completed", config={
+            "source_automation_id": str(source.id),
+            "trigger_on_status": status,
+        })
+
+    def _run(self, automation, payload=None, expect=True):
+        with patch.object(AutomationExecutor, "_execute_single", return_value=True):
+            return AutomationOrchestrator().run(str(automation.id), payload or {})
+
+    @patch("apps.automations.runtime.dispatch_automation")
+    def test_a_successful_run_starts_the_follower(self, dispatch):
+        self._follow(self.target, self.source)
+
+        self._run(self.source)
+
+        dispatch.assert_called_once()
+        automation_id, payload = dispatch.call_args[0]
+        self.assertEqual(str(automation_id), str(self.target.id))
+        self.assertEqual(payload["source_automation_id"], str(self.source.id))
+        self.assertEqual(payload["source_automation_name"], "Source")
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["_chain_depth"], 1)
+
+    @patch("apps.automations.runtime.dispatch_automation")
+    def test_a_follower_waiting_for_another_status_is_not_started(self, dispatch):
+        self._follow(self.target, self.source, status="failure")
+
+        self._run(self.source)
+
+        dispatch.assert_not_called()
+
+    @patch("apps.automations.runtime.dispatch_automation")
+    def test_an_unmet_condition_starts_a_skipped_follower(self, dispatch):
+        factories.make_condition(self.source, field="amount", operator="gt", value="100")
+        self._follow(self.target, self.source, status="skipped")
+
+        self._run(self.source, {"amount": "5"})
+
+        self.assertEqual(dispatch.call_args[0][1]["status"], "skipped")
+
+    @patch("apps.automations.runtime.dispatch_automation")
+    def test_a_disabled_automation_does_not_start_a_chain(self, dispatch):
+        self._follow(self.target, self.source)
+
+        self.source.is_active = False
+        self.source.save()
+
+        self._run(self.source)
+
+        dispatch.assert_not_called()
+
+    @patch("apps.automations.runtime.dispatch_automation")
+    def test_a_paused_run_does_not_start_a_chain(self, dispatch):
+        # 'waiting' is not finished - the second half has not happened yet.
+        factories.make_step(
+            self.source, key="wait", step_type="wait", action_type="",
+            config={"duration": "1h"},
+        )
+        self._follow(self.target, self.source)
+
+        with patch.object(AutomationExecutor, "execute_graph") as graph:
+            from apps.automations.engine.executor import GraphExecutionResult
+
+            graph.return_value = GraphExecutionResult(
+                status="waiting", context={"steps": {}, "vars": {}}, step_results=[],
+            )
+            AutomationOrchestrator().run(str(self.source.id), {}, schedule_continuation=MagicMock())
+
+        dispatch.assert_not_called()
+
+    @patch("apps.automations.runtime.dispatch_automation")
+    def test_a_trigger_may_not_reach_across_tenants(self, dispatch):
+        other_tenant = factories.make_tenant(name="Other")
+        outsider = factories.make_automation(other_tenant, name="Outsider")
+        self._follow(outsider, self.source)
+
+        self._run(self.source)
+
+        dispatch.assert_not_called()
+
+    @patch("apps.automations.runtime.dispatch_automation")
+    def test_a_follower_may_not_borrow_another_tenants_automation(self, dispatch):
+        # The trigger lives in this tenant but names an automation from elsewhere:
+        # the config is the only link, so the fan-out has to filter on the source's
+        # tenant as well.
+        other_tenant = factories.make_tenant(name="Other")
+        outsider = factories.make_automation(other_tenant, name="Outsider")
+        self._follow(self.target, outsider)
+
+        self._run(self.source)
+
+        dispatch.assert_not_called()
+
+    @patch("apps.automations.runtime.dispatch_automation")
+    def test_a_loop_stops_at_the_depth_limit(self, dispatch):
+        from apps.automations.runtime import MAX_CHAIN_DEPTH
+
+        # A -> B and B -> A. Nothing in the data model forbids this pair.
+        self._follow(self.target, self.source)
+        self._follow(self.source, self.target)
+
+        current = self.source
+        payload = {}
+        hops = []
+
+        for _ in range(MAX_CHAIN_DEPTH + 3):
+            dispatch.reset_mock()
+            self._run(current, payload)
+
+            if not dispatch.called:
+                break
+
+            next_id, payload = dispatch.call_args[0]
+            hops.append(payload["_chain_depth"])
+            current = Automation.objects.get(id=next_id)
+
+        self.assertEqual(hops, list(range(1, MAX_CHAIN_DEPTH + 1)))
+        self.assertEqual(payload["_chain_depth"], MAX_CHAIN_DEPTH)
+
+    def test_chain_depth_never_goes_below_zero(self):
+        # The depth is read out of a tenant-authored context, so it can be any
+        # integer - including a negative one.
+        from apps.automations.runtime import chain_depth
+
+        self.assertEqual(chain_depth({"_chain_depth": -999999}), 0)
+        self.assertEqual(chain_depth({"trigger": {"_chain_depth": -3}}), 0)
+        self.assertEqual(chain_depth({"_chain_depth": 2}), 2)
+
+    @patch("apps.automations.runtime.dispatch_automation")
+    def test_a_negative_depth_cannot_bypass_the_depth_limit(self, dispatch):
+        # Read as-is, -999999 would make `depth >= MAX_CHAIN_DEPTH` false on every
+        # hop and an A -> B -> A pair would fan out forever. Clamped, the next hop
+        # is 1 - the same counter a fresh run gets.
+        self._follow(self.target, self.source)
+
+        self._run(self.source, {"_chain_depth": -999999})
+
+        dispatch.assert_called_once()
+        self.assertEqual(dispatch.call_args[0][1]["_chain_depth"], 1)

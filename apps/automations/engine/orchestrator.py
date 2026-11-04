@@ -1,43 +1,82 @@
+import importlib
+import logging
+
 from collections.abc import Mapping
 
-from ..models import Automation,AutomationLog,AutomationStatus
 from .exceptions import EvaluationError,ExecutionError
 from .evaluator import ConditionEvaluator
 from .executor import AutomationExecutor
 from .expressions import build_execution_context
 
-import logging
 
 logger = logging.getLogger(__name__)
+
+# The run's own vocabulary for how it ended. These are plain strings, not
+# AutomationStatus members: reading the values off the model would mean importing it,
+# and the engine is not allowed to know what an Automation is
+# (tests/test_engine_purity.py). They match AutomationStatus to the letter, which is
+# checked by the tests that read the log back.
+STATUS_SUCCESS = 'success'
+STATUS_FAILURE = 'failure'
+STATUS_PENDING = 'pending'
+STATUS_SKIPPED = 'skipped'
+
+# Statuses worth telling the rest of the system about. A paused run is not one of
+# them: the second half of it has not happened yet.
+TERMINAL_STATUSES = frozenset({STATUS_SUCCESS,STATUS_FAILURE,STATUS_SKIPPED})
 
 # How each graph outcome is recorded. A paused run is 'pending', not 'success': the
 # second half of it has not happened yet, and a log that claims otherwise is a log
 # nobody can trust when the continuation never fires.
 GRAPH_LOG_STATUS = {
-        'success' : AutomationStatus.SUCCESS,
-        'skipped' : AutomationStatus.SKIPPED,
-        'waiting' : AutomationStatus.PENDING,
-        'failed' : AutomationStatus.FAILURE,
+        'success' : STATUS_SUCCESS,
+        'skipped' : STATUS_SKIPPED,
+        'waiting' : STATUS_PENDING,
+        'failed' : STATUS_FAILURE,
 }
+
+
+def _default_runtime():
+        # Lazy on purpose: `apps.automations.runtime` imports the ORM, celery and
+        # Django, and the engine must stay importable without any of them.
+        return importlib.import_module('apps.automations.runtime')
 
 
 class AutomationOrchestrator:
 
+        def __init__(self,runtime = None):
+                # The adapter is injectable so a test - or the second consumer the
+                # engine is being extracted for - can supply its own persistence.
+                self._runtime = runtime
+
+        @property
+        def runtime(self):
+                if self._runtime is None:
+                        self._runtime = _default_runtime()
+                return self._runtime
+
         def run(self,automation_id,data,start_step_key = None,schedule_continuation = None):
-                
+
+                runtime = self.runtime
+
                 try:
                         logger.info("Automation Started")
-                        
-                        automation = Automation.objects.get(id = automation_id)
+
+                        try:
+                                automation = runtime.get_automation(automation_id)
+                        except runtime.AutomationNotFound:
+                                logger.error("Automation not found")
+                                return None
 
 
                         if not automation.is_active:
-                                AutomationLog.objects.create(
-                                        automation = automation,
-                                        status = AutomationStatus.FAILURE,
+                                self._record(
+                                        runtime,automation,STATUS_FAILURE,data,
                                         error_message = "Automation is not active",
-                                        execution_context = data,
-                                        
+                                        # A disabled automation cannot start a chain;
+                                        # saying otherwise would resurrect it through
+                                        # the back door.
+                                        notify = False,
                                 )
                                 return False
 
@@ -54,11 +93,9 @@ class AutomationOrchestrator:
 
                         if not decision:
                                 logger.info("Automation conditions are not satisfied, exiting")
-                                AutomationLog.objects.create(
-                                        automation = automation,
-                                        status = AutomationStatus.SKIPPED,
+                                self._record(
+                                        runtime,automation,STATUS_SKIPPED,data,
                                         error_message = "Automation conditions are not satisfied",
-                                        execution_context = data,
                                         decision = decision.as_dict(),
                                 )
                                 return False
@@ -71,7 +108,7 @@ class AutomationOrchestrator:
                         # promise of ROADMAP section 5.1 in practice.
                         if self._should_execute_graph(automation,start_step_key):
                                 return self._run_graph(
-                                        automation,data,decision,start_step_key,
+                                        runtime,automation,data,decision,start_step_key,
                                         schedule_continuation
                                 )
 
@@ -82,59 +119,69 @@ class AutomationOrchestrator:
 
                         if result :
                                 logger.info("Automation has completed succesfully")
-                                AutomationLog.objects.create(
-                                        automation = automation,
-                                        status = AutomationStatus.SUCCESS,
-                                        execution_context = data,
-                                        decision = decision.as_dict()
+                                self._record(
+                                        runtime,automation,STATUS_SUCCESS,data,
+                                        decision = decision.as_dict(),
                                 )
                                 return True
-                        
+
                         logger.info("Automation has been failed")
                         return False
-                        
-
-                
-                        
 
 
-                except Automation.DoesNotExist as e:
-                        logger.error("Automation not found")
 
                 except EvaluationError as e:
                         logger.error("An evaluation error happened : " + str(e))
-                        AutomationLog.objects.create(
-                                        automation = automation,
-                                        status = AutomationStatus.FAILURE,
-                                        error_message = str(e),
-                                        execution_context = data,
-                                        # The evaluator hands over whatever it managed to
-                                        # decide before it gave up; that partial trace is
-                                        # the most useful one there is.
-                                        #
-                                        # `is not None`, not a truth test: Decision.__bool__
-                                        # reports the RESULT, and a partial trace from a
-                                        # failed run always carries result=False. Testing
-                                        # it for truth threw away the very thing being
-                                        # rescued.
-                                        decision = e.decision.as_dict() if e.decision is not None else None,
+                        self._record(
+                                runtime,automation,STATUS_FAILURE,data,
+                                error_message = str(e),
+                                # The evaluator hands over whatever it managed to
+                                # decide before it gave up; that partial trace is
+                                # the most useful one there is.
+                                #
+                                # `is not None`, not a truth test: Decision.__bool__
+                                # reports the RESULT, and a partial trace from a
+                                # failed run always carries result=False. Testing
+                                # it for truth threw away the very thing being
+                                # rescued.
+                                decision = e.decision.as_dict() if e.decision is not None else None,
                         )
 
                 except ExecutionError as e:
                         logger.error("An execution error happened : " + str(e))
 
-                        AutomationLog.objects.create(
-                                        automation = automation,
-                                        status = AutomationStatus.FAILURE,
-                                        error_message = str(e),
-                                        execution_context = data,
+                        self._record(
+                                runtime,automation,STATUS_FAILURE,data,
+                                error_message = str(e),
                         )
-                
+
                 except Exception:
                         # logger.error(msg, arg) treats arg as a %-format parameter; with
                         # no placeholder in the message this failed inside logging itself
                         # and swallowed the very error it was meant to report.
                         logger.exception("An unexpected error happened")
+
+
+        def _record(self,runtime,automation,status,execution_context,error_message = None,
+                        decision = None,notify = True):
+                """
+                Write the run's log and, for a finished run, tell the followers.
+
+                Chaining and logging share this one exit on purpose: a status written
+                to the log and a status fanned out to `automation_completed` triggers
+                drifting apart is exactly the kind of bug nobody sees, because both
+                sides look fine on their own.
+                """
+                runtime.create_log(
+                        automation = automation,
+                        status = status,
+                        error_message = error_message,
+                        execution_context = execution_context,
+                        decision = decision,
+                )
+
+                if notify and status in TERMINAL_STATUSES and automation.is_active:
+                        runtime.notify_automation_completed(automation,status,execution_context)
 
 
         #
@@ -189,7 +236,7 @@ class AutomationOrchestrator:
                 return build_execution_context(data,automation)
 
 
-        def _run_graph(self,automation,data,decision,start_step_key,schedule_continuation):
+        def _run_graph(self,runtime,automation,data,decision,start_step_key,schedule_continuation):
                 context = self._execution_context(automation,data,start_step_key)
 
                 result = AutomationExecutor().execute_graph(
@@ -201,12 +248,12 @@ class AutomationOrchestrator:
                         start_step_key = start_step_key,
                 )
 
-                status = GRAPH_LOG_STATUS.get(result.status,AutomationStatus.FAILURE)
+                status = GRAPH_LOG_STATUS.get(result.status,STATUS_FAILURE)
                 error_message = self._first_error(result)
 
-                if status == AutomationStatus.SUCCESS:
+                if status == STATUS_SUCCESS:
                         logger.info("Automation has completed succesfully")
-                elif status == AutomationStatus.PENDING:
+                elif status == STATUS_PENDING:
                         logger.info(
                                 "Automation is waiting until %s, resuming from step %s",
                                 result.waiting_until,
@@ -221,22 +268,20 @@ class AutomationOrchestrator:
                                         "scheduler was supplied",
                                         automation.id,
                                 )
-                elif status == AutomationStatus.SKIPPED:
+                elif status == STATUS_SKIPPED:
                         logger.info("Automation stopped at a filter step")
                 else:
                         logger.info("Automation has been failed")
 
-                AutomationLog.objects.create(
-                        automation = automation,
-                        status = status,
+                self._record(
+                        runtime,automation,status,result.context,
                         error_message = error_message,
-                        execution_context = result.context,
                         decision = decision.as_dict(),
                 )
 
                 # 'waiting' is not a failure: the run did everything it could and the
                 # rest is scheduled. The caller gets True, the log says PENDING.
-                return status in (AutomationStatus.SUCCESS,AutomationStatus.PENDING)
+                return status in (STATUS_SUCCESS,STATUS_PENDING)
 
 
         def _first_error(self,result):

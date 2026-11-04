@@ -50,6 +50,10 @@ class TriggerType(models.TextChoices):
         MANUAL = 'manual','Manuel',
         WEBHOOK = 'webhook','Webhook'
         SIGNAL = 'signal', 'Sinyal'
+        # Emitted by the orchestrator when a run finishes, so a workflow can be split
+        # into parts (ROADMAP section 4.1). Fanned out by runtime.notify_automation_completed.
+        AUTOMATION_COMPLETED = 'automation_completed', _('Otomasyon Tamamlandı')
+
 
 
 class ConditionOperators(models.TextChoices):
