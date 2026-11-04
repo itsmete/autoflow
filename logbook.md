@@ -12,7 +12,78 @@ Mimari, stil ve kalıcı kurallar burada değil → `CLAUDE.md`.
 
 ---
 
-## 2026-11-05 — Faz 1.E (2/2) + Faz 1.F: `automation_completed`, `field_changed`, motor saflığı
+## 2026-11-05 — Faz 2.A (T-201): `AutomationRun` + `AutomationStepRun` ve adım memoizasyonu
+
+**Kim:** OpenCode (worker) · **Branch:** `develop`
+**Durum:** 650 test yeşil (636 → +14 yeni), `engine/` 0 framework import'u.
+
+### 1. Neden iki yeni tablo
+
+`AutomationLog` bir koşunun **özeti**; bir denemenin **kimliği** değil. Yarım kalan bir
+koşuyu yeniden başlatmak, "hangi adım zaten yapıldı" sorusunun cevabını kalıcı bir
+yerde tutmayı gerektiriyor. `AutomationRun` o kimliği (`id`, `status`, `mode`,
+`trigger_payload`, `context`, `started_at`/`finished_at`), `AutomationStepRun` ise
+adım başına `input`/`output`/`status`/`attempt`/`duration_ms`/`error`/`decision`
+tutuyor. `AutomationLog` **kaldırılmadı**: aynı koşuda ikisi de yazılıyor, böylece
+mevcut API ve 636 test hiç etkilenmedi (`ROADMAP` §5.2, T-202'de API'ye taşınacak).
+
+### 2. Memoizasyon sözleşmesi (`engine/executor.py`)
+
+`execute_graph(..., completed_steps=None, on_step_complete=None)`:
+`completed_steps[step_key]['status'] == 'success'` ise adım **çalıştırılmıyor**;
+saklanan `output` `context['steps'][key]`'e enjekte ediliyor, dal/filtre kenarları
+saklanan çıktıya göre kuyruğa alınıyor, `step_results`'a `memoized: True` düşülüyor
+ve yürüyüş devam ediyor. `set_variable` istisnası önemli: `output` sözlüğü
+`context['vars']`'a (ve rezerve olmayan adlarda üst seviyeye) geri yazılıyor — aksi
+hâlde devam eden koşuda `{{vars.greeting}}` hiçbir şeye çözümlenmezdi.
+
+Yalnızca `success` memoize ediliyor: başarısız bir adımı atlamak, hiç yapılmamış bir
+işi "yeniden denemeyle başarılı" göstermenin en kısa yolu olurdu.
+
+`attempt` ve `duration_ms` her adım sonucunda var. `on_failure='retry'` deneme sayısını
+`_execute_step_action` içinde harcadığı için sayı istisnayla taşınıyor
+(`StepExecutionError(attempt=...)`); `on_step_complete` çağrısı **raise'den önce**
+yapılıyor, yani 3 denemeyi tüketen adımın satırı da yazılıyor.
+
+### 3. Orkestratör ve çalıştırma kimliği
+
+`AutomationOrchestrator.run(..., run_id=None, mode='live')`:
+`runtime.start_or_resume_run()` ya satırı bulup `completed_steps` ile döndürür ya da
+yenisini yaratır. `completed_steps` doluysa **her zaman** grafik yolu seçilir
+(`_should_execute_graph`) — düz action listesi memoizasyon yapamaz. Koşu
+`runtime.finish_run()` ile kapatılıyor: terminal durumlarda `finished_at` yazılıyor,
+`waiting`'de **yazılmıyor** (askıda duran koşu kapanmış görünmemeli).
+
+`wait` devamı aynı koşuya dönmeli, yoksa saniyeler önce tamamlanmış adımlar boş bir
+geçmişe yazılır. Orkestratör, `schedule_continuation`'ı `run_id` ekleyen bir sarmalayıcı
+ile geçiriyor; motor `run_id`'yi hiç görmeden (`engine/` saf kalıyor) Celery tarafı
+`run_automation(..., run_id=...)` ile aynı satırı buluyor.
+
+Eski action yolu (ROADMAP §5.1 sözleşmesi) korundu: `execute_actions()` davranışı
+birebir aynı, sadece opsiyonel `on_action_complete` callback'i eklendi — eski koşular
+da adım geçmişi kazanıyor ama çıktıları yok, dolayısıyla memoize edilemiyorlar
+(`output=None`; uydurulmuş bir çıktı sonraki ifadenin okuduğu değer olurdu).
+
+### 4. Testler — fazın çıkış kriteri
+
+`tests/test_engine_durable.py` (14 test): 3 adımlı otomasyonda ilk koşu 1 ve 2'yi
+bitirip 3'te "worker ölüyor" (`requests` ilk çağrıda patlıyor). İkinci koşu
+`run_id=str(run.id)` ile: **adım 1 ve 2 için sağlayıcı 0 kez çağrılıyor**, adım 3
+`{{steps.2.output.message}}` ile ilk koşunun çıktısını okuyor, `AutomationRun`
+`success` oluyor ve satır sayısı 1 kalıyor. Ayrıca `branch` + `set_variable`
+memoizasyonu (ikinci payload farklı `vip`/`customer` taşısa da koşu orijinal dalda ve
+orijinal değişkenlerle devam ediyor), `wait` devamında tek `AutomationRun`, `attempt=3`,
+tükenen retry'ın kalıcılaştırılması ve legacy action koşuları.
+
+### 5. Denenip başarısız olan yol
+
+`Branch`'i de memoize etmek ilk bakışta gereksiz görünüyor ("koşu zaten o dala
+girmiş"), ama `wait` sonrası devam eden koşu başlangıçtan yürümediği için dal adımı
+tekrar ziyaret edilir; memoize edilmeseydi payload değişmişse koşu **başka bir yola**
+sapardı. Testi bu yüzden ikinci payload'da `vip=False` gönderiyor.
+
+---
+
 
 **Kim:** OpenCode (worker) · **Branch:** `develop`
 **Durum:** 311 test (T-106/T-107 kapsamındaki 6 modül) yeşil, `test_engine_purity` 0 ihlal.

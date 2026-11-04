@@ -17,6 +17,7 @@ an ORM row, or a SimpleNamespace in a test - which is what keeps the engine
 shareable and what tests/test_engine_purity.py measures.
 """
 import math
+import time
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -52,6 +53,20 @@ RESULT_FAILED = 'failed'
 
 # `24h`, `15m`, `30s`, `7d`. A bare number reads as seconds.
 _WAIT_UNITS = {'s' : 1,'m' : 60,'h' : 3600,'d' : 86400}
+
+
+class StepExecutionError(ExecutionError):
+        """
+        An ExecutionError that knows how many attempts were spent on it.
+
+        The count has to travel with the exception: `on_failure='retry'` exhausts its
+        attempts inside `_execute_step_action`, so by the time the walk sees the error
+        the only honest source for "how many tries did this take" is the raise itself.
+        """
+
+        def __init__(self,message,attempt = 1):
+                super().__init__(message)
+                self.attempt = attempt
 
 
 @dataclass
@@ -243,29 +258,42 @@ class AutomationExecutor:
                 return status
 
 
-        def execute_actions(self,actions,data):
+        def execute_actions(self,actions,data,on_action_complete = None):
                 """
                 Run an ordered list of AutomationAction rows.
 
                 Unchanged, and frozen for the whole of Faz 1: automate-the-actions
                 clients and their tests rely on this exact contract.
+
+                `on_action_complete` is optional and additive - with no callback the
+                method behaves exactly as it always has. It exists so a
+                `AutomationRun` can record one row per legacy action without the
+                orchestrator re-implementing the stop/continue/retry policies here.
                 """
                 if not actions:
                         raise ExecutionError("No action is found")
 
                 
                 for action in actions:
+                        started = time.monotonic()
+                        status = RESULT_SUCCESS
                         try:
                                 self._execute_single(action,data)
                         except ExecutionError:
+                                status = RESULT_FAILED
+
                                 if getattr(action,'on_failure',None) == ON_FAILURE_RETRY:
                                         self._retry(action,data)
+                                        status = RESULT_SUCCESS
 
                                 elif getattr(action,'on_failure',None) == ON_FAILURE_STOP:
+                                        self._action_complete(action,status,started,on_action_complete)
                                         return False
 
                                 elif getattr(action,'on_failure',None) == ON_FAILURE_CONTINUE:
                                         pass
+
+                        self._action_complete(action,status,started,on_action_complete)
 
 
                 return True
@@ -296,7 +324,8 @@ class AutomationExecutor:
         #
 
         def execute_graph(self,steps,edges,context,*,evaluator = None,
-                          schedule_continuation = None,start_step_key = None):
+                          schedule_continuation = None,start_step_key = None,
+                          completed_steps = None,on_step_complete = None):
                 """
                 Walk the step graph once and return a GraphExecutionResult.
 
@@ -304,6 +333,14 @@ class AutomationExecutor:
                 stops, records where it stopped and asks `schedule_continuation` to
                 bring the run back later. Everything else is depth-agnostic - the
                 queue is a worklist, so a fan-out and a merge need no special case.
+
+                `completed_steps` is the memoization contract (ROADMAP section 5.2):
+                a `{step_key: {'status': 'success', 'output': ..., 'decision': ...}}`
+                mapping of what an earlier, interrupted pass already achieved. Those
+                steps are NOT executed again - their stored output is injected into
+                the context and the walk continues past them. `on_step_complete` is
+                called for every step the walk finishes, memoized or live, so the
+                caller can persist one row per step.
                 """
                 steps = list(steps or [])
                 edges = list(edges or [])
@@ -320,6 +357,10 @@ class AutomationExecutor:
                         context['steps'] = {}
                 if not isinstance(context.get('vars'),dict):
                         context['vars'] = {}
+
+                # Copied because this is read repeatedly inside the walk and must not
+                # change under it if the caller keeps a reference.
+                completed_steps = dict(completed_steps or {})
 
                 steps_by_key = {}
                 steps_by_id = {}
@@ -371,12 +412,61 @@ class AutomationExecutor:
                         step_type = getattr(step,'step_type',STEP_ACTION) or STEP_ACTION
                         outgoing = outgoing_by_key.get(key,[])
 
+                        saved = completed_steps.get(key)
+
+                        if saved is not None and saved.get('status') == RESULT_SUCCESS:
+                                # Memoized hit: this run already did this step and the
+                                # row says so. Re-running it would re-send the message
+                                # or re-bill the AI call, which is the whole reason
+                                # AutomationStepRun exists.
+                                step_result = self._restore_memoized(key,step_type,saved,context)
+
+                                step_results.append(step_result)
+
+                                if on_step_complete is not None:
+                                        on_step_complete(step,step_result)
+
+                                if step_type == STEP_BRANCH:
+                                        chosen = (saved.get('output') or {}).get('branch')
+
+                                        for to_key,edge in outgoing:
+                                                if chosen is not None and _branch_key(edge) == chosen:
+                                                        if to_key not in executed:
+                                                                queue.append(to_key)
+                                elif step_type == STEP_FILTER:
+                                        if (saved.get('output') or {}).get('passed',True):
+                                                self._enqueue(queue,executed,outgoing)
+                                else:
+                                        # `action`, `set_variable` and anything whose
+                                        # recorded output is enough to continue.
+                                        self._enqueue(queue,executed,outgoing)
+
+                                continue
+
                         if step_type == STEP_ACTION:
+                                started = time.monotonic()
+                                step_input = self._step_config(step)
+
                                 try:
-                                        output = self._execute_step_action(step,context)
+                                        output,attempt = self._execute_step_action(step,context)
                                 except ExecutionError as error:
+                                        attempt = getattr(error,'attempt',1)
+
                                         context['steps'][key] = {'status' : 'failed','error' : str(error)}
-                                        step_results.append(self._record(key,step_type,context))
+
+                                        # Recorded BEFORE any raise below: a step that
+                                        # burns all its retries is exactly the row an
+                                        # operator needs to see afterwards.
+                                        step_result = self._record(
+                                                key,step_type,context,
+                                                attempt = attempt,
+                                                duration_ms = self._elapsed_ms(started),
+                                                input = step_input,
+                                        )
+                                        step_results.append(step_result)
+
+                                        if on_step_complete is not None:
+                                                on_step_complete(step,step_result)
 
                                         policy = getattr(step,'on_failure',ON_FAILURE_STOP) or ON_FAILURE_STOP
 
@@ -398,6 +488,8 @@ class AutomationExecutor:
                                         failed = True
                                         break
 
+                                duration_ms = self._elapsed_ms(started)
+
                                 if output.get('sent'):
                                         context['steps'][key] = {'status' : 'success','output' : output}
                                         filter_stopped = False
@@ -412,27 +504,72 @@ class AutomationExecutor:
 
                                         policy = getattr(step,'on_failure',ON_FAILURE_STOP) or ON_FAILURE_STOP
                                         if policy == ON_FAILURE_CONTINUE:
-                                                step_results.append(self._record(key,step_type,context))
+                                                step_result = self._record(
+                                                        key,step_type,context,
+                                                        attempt = attempt,
+                                                        duration_ms = duration_ms,
+                                                        input = step_input,
+                                                )
+                                                step_results.append(step_result)
+
+                                                if on_step_complete is not None:
+                                                        on_step_complete(step,step_result)
+
                                                 self._enqueue(queue,executed,outgoing)
                                                 continue
 
-                                        step_results.append(self._record(key,step_type,context))
+                                        step_result = self._record(
+                                                key,step_type,context,
+                                                attempt = attempt,
+                                                duration_ms = duration_ms,
+                                                input = step_input,
+                                        )
+                                        step_results.append(step_result)
+
+                                        if on_step_complete is not None:
+                                                on_step_complete(step,step_result)
+
                                         failed = True
                                         break
 
-                                step_results.append(self._record(key,step_type,context))
+                                step_result = self._record(
+                                        key,step_type,context,
+                                        attempt = attempt,
+                                        duration_ms = duration_ms,
+                                        input = step_input,
+                                )
+                                step_results.append(step_result)
+
+                                if on_step_complete is not None:
+                                        on_step_complete(step,step_result)
+
                                 self._enqueue(queue,executed,outgoing)
 
                         elif step_type == STEP_SET_VARIABLE:
+                                started = time.monotonic()
+                                step_input = self._step_config(step)
+
                                 resolved = self._resolve_variables(step,context)
 
                                 context['steps'][key] = {'status' : 'success','output' : resolved}
-                                step_results.append(self._record(key,step_type,context))
+
+                                step_result = self._record(
+                                        key,step_type,context,
+                                        duration_ms = self._elapsed_ms(started),
+                                        input = step_input,
+                                )
+                                step_results.append(step_result)
+
+                                if on_step_complete is not None:
+                                        on_step_complete(step,step_result)
 
                                 self._enqueue(queue,executed,outgoing)
 
                         elif step_type == STEP_FILTER:
-                                conditions = _condition_objects(self._step_config(step).get('conditions'))
+                                started = time.monotonic()
+                                step_input = self._step_config(step)
+
+                                conditions = _condition_objects(step_input.get('conditions'))
                                 decision = evaluator.evaluate_conditions(conditions,context)
                                 passed = bool(decision)
 
@@ -441,7 +578,16 @@ class AutomationExecutor:
                                         'output' : {'passed' : passed},
                                         'decision' : decision.as_dict(),
                                 }
-                                step_results.append(self._record(key,step_type,context))
+
+                                step_result = self._record(
+                                        key,step_type,context,
+                                        duration_ms = self._elapsed_ms(started),
+                                        input = step_input,
+                                )
+                                step_results.append(step_result)
+
+                                if on_step_complete is not None:
+                                        on_step_complete(step,step_result)
 
                                 if passed:
                                         self._enqueue(queue,executed,outgoing)
@@ -452,6 +598,9 @@ class AutomationExecutor:
                                         filter_stopped = True
 
                         elif step_type == STEP_BRANCH:
+                                started = time.monotonic()
+                                step_input = self._step_config(step)
+
                                 chosen,branch_decisions = self._choose_branch(
                                         step,context,evaluator,outgoing
                                 )
@@ -461,7 +610,16 @@ class AutomationExecutor:
                                         'output' : {'branch' : chosen},
                                         'decision' : branch_decisions,
                                 }
-                                step_results.append(self._record(key,step_type,context))
+
+                                step_result = self._record(
+                                        key,step_type,context,
+                                        duration_ms = self._elapsed_ms(started),
+                                        input = step_input,
+                                )
+                                step_results.append(step_result)
+
+                                if on_step_complete is not None:
+                                        on_step_complete(step,step_result)
 
                                 # Only the chosen path continues; the other branches
                                 # are not "skipped steps", they were never reached.
@@ -471,7 +629,10 @@ class AutomationExecutor:
                                                         queue.append(to_key)
 
                         elif step_type == STEP_WAIT:
-                                delay_seconds,eta = parse_wait_duration(self._step_config(step),context)
+                                started = time.monotonic()
+                                step_input = self._step_config(step)
+
+                                delay_seconds,eta = parse_wait_duration(step_input,context)
 
                                 next_keys = [to_key for to_key,_edge in outgoing]
                                 next_key = next_keys[0] if next_keys else None
@@ -486,7 +647,16 @@ class AutomationExecutor:
                                                 'resume_from' : next_key,
                                         },
                                 }
-                                step_results.append(self._record(key,step_type,context))
+
+                                step_result = self._record(
+                                        key,step_type,context,
+                                        duration_ms = self._elapsed_ms(started),
+                                        input = step_input,
+                                )
+                                step_results.append(step_result)
+
+                                if on_step_complete is not None:
+                                        on_step_complete(step,step_result)
 
                                 waiting = True
                                 waiting_until = pending_until
@@ -618,7 +788,7 @@ class AutomationExecutor:
                 return config if isinstance(config,Mapping) else {}
 
 
-        def _record(self,key,step_type,context):
+        def _record(self,key,step_type,context,attempt = 1,duration_ms = None,input = None):
                 entry = context['steps'].get(key) or {}
 
                 return {
@@ -626,16 +796,88 @@ class AutomationExecutor:
                         'step_type' : step_type,
                         'status' : entry.get('status'),
                         'output' : entry.get('output'),
+                        'decision' : entry.get('decision'),
+                        'error' : entry.get('error') or '',
+                        'attempt' : attempt,
+                        'duration_ms' : duration_ms,
+                        'input' : input if isinstance(input,Mapping) else (input or {}),
                 }
+
+
+        def _elapsed_ms(self,started):
+                """Wall time of a step, in milliseconds, never negative."""
+                return max(0,int((time.monotonic() - started) * 1000))
+
+
+        def _restore_memoized(self,key,step_type,saved,context):
+                """
+                Put a memoized step back into the context and describe what it did.
+
+                Restoring `set_variable` is not cosmetic: the variables it computed are
+                what the steps after it read (`{{vars.greeting}}`), and the resumed pass
+                never runs that step, so nothing else would ever set them again.
+                """
+                entry = {'status' : RESULT_SUCCESS,'output' : saved.get('output')}
+
+                if saved.get('decision') is not None:
+                        entry['decision'] = saved.get('decision')
+
+                context['steps'][key] = entry
+
+                if step_type == STEP_SET_VARIABLE and isinstance(saved.get('output'),Mapping):
+                        for name,value in saved['output'].items():
+                                context['vars'][name] = value
+
+                                if name not in RESERVED_NAMESPACES:
+                                        context[name] = value
+
+                return {
+                        'key' : key,
+                        'step_type' : step_type,
+                        'status' : RESULT_SUCCESS,
+                        'output' : saved.get('output'),
+                        'decision' : saved.get('decision'),
+                        'error' : '',
+                        'attempt' : saved.get('attempt') or 1,
+                        'duration_ms' : saved.get('duration_ms'),
+                        'input' : saved.get('input') if isinstance(saved.get('input'),Mapping) else {},
+                        'memoized' : True,
+                }
+
+
+        def _action_complete(self,action,status,started,on_action_complete):
+                """
+                Report one legacy action to the caller, if it asked.
+
+                `output` is None: execute_actions() only ever learns whether the action
+                sent. Nothing is invented here - a fabricated output would become the
+                value a later expression reads.
+                """
+                if on_action_complete is None:
+                        return
+
+                on_action_complete(action,{
+                        'key' : str(getattr(action,'order','')),
+                        'step_type' : STEP_ACTION,
+                        'status' : status,
+                        'output' : None,
+                        'decision' : None,
+                        'error' : '',
+                        'attempt' : 1,
+                        'duration_ms' : self._elapsed_ms(started),
+                        'input' : self._step_config(action),
+                })
 
 
         def _execute_step_action(self,step,context):
                 """
-                Run one action step and return its output dict.
+                Run one action step and return `(output, attempt)`.
 
                 `on_failure='retry'` is applied here because it is the one policy that
                 changes how many times the action runs. 'stop' and 'continue' decide
-                what the walk does next, so they stay in the walk.
+                what the walk does next, so they stay in the walk. The attempt count
+                comes back with the output because only this method knows how many
+                tries `retry` actually spent.
                 """
                 action_type = getattr(step,'action_type',None)
                 action_cls = get_action_class(action_type)
@@ -647,11 +889,11 @@ class AutomationExecutor:
                 policy = getattr(step,'on_failure',ON_FAILURE_STOP) or ON_FAILURE_STOP
 
                 if policy != ON_FAILURE_RETRY:
-                        return action.run_with_output(context)
+                        return action.run_with_output(context),1
 
                 last_error = None
 
-                for _attempt in range(self.MAX_RETRIES):
+                for attempt in range(1,self.MAX_RETRIES + 1):
                         try:
                                 output = action.run_with_output(context)
                         except ExecutionError as error:
@@ -659,16 +901,19 @@ class AutomationExecutor:
                                 continue
 
                         if output.get('sent'):
-                                return output
+                                return output,attempt
 
                         last_error = ExecutionError(
                                 "An action (%s) failed on all %s attempts"
                                 % (str(getattr(step,'id','?')),self.MAX_RETRIES)
                         )
 
-                raise last_error or ExecutionError(
-                        "An action (%s) failed on all %s attempts"
-                        % (str(getattr(step,'id','?')),self.MAX_RETRIES)
+                raise StepExecutionError(
+                        str(last_error or (
+                                "An action (%s) failed on all %s attempts"
+                                % (str(getattr(step,'id','?')),self.MAX_RETRIES)
+                        )),
+                        attempt = self.MAX_RETRIES,
                 )
 
 

@@ -150,6 +150,38 @@ class LogicalOperator(models.TextChoices):
     OR = ops.OR, 'Veya'
 
 
+class RunStatus(models.TextChoices):
+        # The state machine of one execution (ROADMAP section 5.2). 'waiting' is not
+        # a failure: the run did everything it could and a continuation owns the rest.
+        QUEUED = 'queued', _("Kuyrukta")
+        RUNNING = 'running', _("Çalışıyor")
+        WAITING = 'waiting', _("Bekliyor")
+        SUCCESS = 'success', _("Başarılı")
+        FAILED = 'failed', _("Başarısız")
+        # 'failed' means "this attempt failed"; 'failed_permanently' means the retry
+        # budget is spent and no continuation is coming. Replay only replays the
+        # first, which is why the two are not the same value.
+        FAILED_PERMANENTLY = 'failed_permanently', _("Kalıcı Başarısız")
+        SKIPPED = 'skipped', _("Atlandı")
+        CANCELLED = 'cancelled', _("İptal Edildi")
+
+
+class RunMode(models.TextChoices):
+        LIVE = 'live', _("Canlı")
+        TEST = 'test', _("Test")
+
+
+class StepRunStatus(models.TextChoices):
+        # A subset of RunStatus on purpose: there is no 'queued' step (the walk
+        # reaches it or it does not) and no 'cancelled' step (the run is what gets
+        # cancelled).
+        RUNNING = 'running', _("Çalışıyor")
+        WAITING = 'waiting', _("Bekliyor")
+        SUCCESS = 'success', _("Başarılı")
+        FAILED = 'failed', _("Başarısız")
+        SKIPPED = 'skipped', _("Atlandı")
+
+
 
 class Automation(BaseModel):
         name = models.CharField(max_length=128)
@@ -423,6 +455,98 @@ class AutomationLog(BaseModel):
         # value, its result, and which ones were short-circuited. Answers "why did
         # this customer not get the message", which a bare status never could.
         decision = models.JSONField(null=True,blank=True)
+
+
+
+class AutomationRun(BaseModel):
+        """
+        One execution of an automation (ROADMAP section 5.2).
+
+        AutomationLog stays exactly as it is and keeps being written: it is the
+        summary view of this row, and the API reads it. What this model adds is the
+        thing a log can never hold - a durable identity for the attempt, so a worker
+        that dies halfway can be resumed instead of restarted (see
+        AutomationStepRun and the memoization contract in the executor).
+        """
+        automation = models.ForeignKey(Automation,on_delete = models.CASCADE,related_name = 'runs',verbose_name = _("Otomasyon"))
+
+        status = models.CharField(choices = RunStatus.choices,default = RunStatus.QUEUED,max_length = 24,verbose_name = _("Durum"))
+
+        mode = models.CharField(choices = RunMode.choices,default = RunMode.LIVE,max_length = 16,verbose_name = _("Çalışma Modu"))
+
+        # The payload as it arrived, kept separate from `context` because context is
+        # rewritten during the run (steps, vars) and the trigger input must not be
+        # overwritten by the run's own intermediate state.
+        trigger_payload = models.JSONField(default = dict,blank = True,verbose_name = _("Tetikleyici Verisi"))
+
+        context = models.JSONField(default = dict,blank = True,verbose_name = _("Çalıştırma Bağlamı"))
+
+        decision = models.JSONField(null = True,blank = True,verbose_name = _("Karar İzi"))
+
+        error_message = models.TextField(blank = True,default = '',verbose_name = _("Hata Mesajı"))
+
+        # Deduplication key for a delivery that may arrive more than once (a webhook
+        # retry). Indexed, not unique: the same automation may legitimately be asked
+        # to run twice with the same key after a replay, and losing a run is worse
+        # than accepting a duplicate.
+        idempotency_key = models.CharField(max_length = 128,null = True,blank = True,db_index = True,verbose_name = _("Idempotency Anahtarı"))
+
+        # A re-run of an earlier attempt. SET_NULL rather than CASCADE: deleting an
+        # old run must not take the record of its replay with it.
+        replay_of = models.ForeignKey('self',on_delete = models.SET_NULL,null = True,blank = True,related_name = 'replays',verbose_name = _("Tekrarlanan Çalıştırma"))
+
+        started_at = models.DateTimeField(null = True,blank = True,verbose_name = _("Başlangıç Zamanı"))
+        finished_at = models.DateTimeField(null = True,blank = True,verbose_name = _("Bitiş Zamanı"))
+
+        class Meta:
+                verbose_name = _("Otomasyon Çalıştırması")
+                verbose_name_plural = _("Otomasyon Çalıştırmaları")
+                ordering = ['-created_at']
+
+        def __str__(self):
+                return f"{self.automation.name} - {self.status} ({self.id})"
+
+
+class AutomationStepRun(BaseModel):
+        """
+        One step of one run: its input, its output, how long it took, how many tries.
+
+        This row is what makes memoization possible. A step whose row says 'success'
+        is never executed again when the run is resumed - its stored `output` is
+        injected into the context instead (ROADMAP section 5.2). Without the output
+        being persisted, "resume" would have to mean "run the whole thing again".
+        """
+        run = models.ForeignKey(AutomationRun,on_delete = models.CASCADE,related_name = 'step_runs',verbose_name = _("Çalıştırma"))
+
+        # SET_NULL: editing the canvas must not erase the history of a run that
+        # already happened. `step_key` carries the identity that survives.
+        step = models.ForeignKey(AutomationStep,on_delete = models.SET_NULL,null = True,blank = True,related_name = 'step_runs',verbose_name = _("Adım"))
+
+        step_key = models.CharField(max_length = 64,verbose_name = _("Adım Anahtarı"))
+
+        step_type = models.CharField(choices = StepTypes.choices,max_length = 32,default = StepTypes.ACTION,verbose_name = _("Adım Tipi"))
+
+        status = models.CharField(choices = StepRunStatus.choices,default = StepRunStatus.RUNNING,max_length = 16,verbose_name = _("Durum"))
+
+        attempt = models.PositiveIntegerField(default = 1,verbose_name = _("Deneme Sayısı"))
+
+        input = models.JSONField(default = dict,blank = True,verbose_name = _("Girdi"))
+
+        output = models.JSONField(null = True,blank = True,verbose_name = _("Çıktı"))
+
+        decision = models.JSONField(null = True,blank = True,verbose_name = _("Adım Karar İzi"))
+
+        error = models.TextField(blank = True,default = '',verbose_name = _("Hata"))
+
+        duration_ms = models.PositiveIntegerField(null = True,blank = True,verbose_name = _("Süre (ms)"))
+
+        class Meta:
+                verbose_name = _("Adım Çalıştırması")
+                verbose_name_plural = _("Adım Çalıştırmaları")
+                ordering = ['created_at']
+
+        def __str__(self):
+                return f"{self.step_key} ({self.step_type}) - {self.status}"
 
 
 

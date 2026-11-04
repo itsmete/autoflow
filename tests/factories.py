@@ -14,7 +14,9 @@ from apps.automations.models import (
     AutomationCondition,
     AutomationEdge,
     AutomationLog,
+    AutomationRun,
     AutomationStep,
+    AutomationStepRun,
     AutomationTrigger,
     Template,
 )
@@ -185,6 +187,38 @@ def make_log(automation, status="success", error_message="", execution_context=N
         status=status,
         error_message=error_message,
         execution_context=execution_context if execution_context is not None else {},
+    )
+
+
+def make_run(automation, status="running", mode="live", **kwargs):
+    # started_at/finished_at are left to the caller: a run built as 'running' has no
+    # business claiming a finish time, and a fixture that filled one in would hide
+    # exactly the bug (a run closed while still running) the durable tests look for.
+    return AutomationRun.objects.create(
+        automation=automation,
+        status=status,
+        mode=mode,
+        trigger_payload=kwargs.pop("trigger_payload", {}),
+        context=kwargs.pop("context", {}),
+        **kwargs,
+    )
+
+
+def make_step_run(run, step_key="1", step_type="action", status="success",
+                  attempt=1, input=None, output=None, decision=None, error="",
+                  duration_ms=None, step=None):
+    return AutomationStepRun.objects.create(
+        run=run,
+        step=step,
+        step_key=step_key,
+        step_type=step_type,
+        status=status,
+        attempt=attempt,
+        input=input if input is not None else {},
+        output=output,
+        decision=decision,
+        error=error,
+        duration_ms=duration_ms,
     )
 
 

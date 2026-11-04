@@ -18,14 +18,22 @@ import json
 from collections.abc import Mapping
 
 from django.apps import apps
+from django.core.exceptions import ValidationError
 from django.db.models.signals import post_delete, post_save
 from django.forms.models import model_to_dict
+from django.utils import timezone
 from rest_framework.utils.encoders import JSONEncoder
 
 from .models import (
         Automation,
         AutomationLog,
+        AutomationRun,
+        AutomationStep,
+        AutomationStepRun,
         AutomationTrigger,
+        RunStatus,
+        RunMode,
+        StepRunStatus,
         TriggerType,
 )
 from .tasks import run_automation
@@ -71,6 +79,141 @@ def create_log(automation,status,error_message = None,execution_context = None,d
 
 def get_django_signal(signal_name):
         return DJANGO_SIGNALS.get(signal_name)
+
+
+#
+# Run persistence (Faz 2.A)
+#
+# `AutomationLog` is the summary the API reads, and it keeps being written exactly as
+# before. `AutomationRun` is the durable identity of one attempt, and
+# `AutomationStepRun` is why a crashed run can be resumed instead of restarted: the
+# executor is handed the outputs already achieved and skips those steps (ROADMAP
+# section 5.2). Both live here because the engine is not allowed to touch the ORM.
+#
+
+# A status after which nothing is coming for this run. 'waiting' is deliberately not
+# here: a continuation still owns the rest of it, and stamping finished_at would make
+# a paused run look like a closed one.
+TERMINAL_RUN_STATUSES = frozenset({
+        RunStatus.SUCCESS,
+        RunStatus.FAILED,
+        RunStatus.FAILED_PERMANENTLY,
+        RunStatus.SKIPPED,
+        RunStatus.CANCELLED,
+})
+
+
+def completed_steps_from_run(run):
+        """
+        `{step_key: {'status': 'success', 'output': ..., 'decision': ...}}`.
+
+        Only `success` rows are memoizable. A failed step must be attempted again -
+        skipping it would let a retry "succeed" without ever having done the work.
+        """
+        steps = {}
+
+        for step_run in run.step_runs.filter(status = StepRunStatus.SUCCESS):
+                steps[step_run.step_key] = {
+                        'status' : 'success',
+                        'output' : step_run.output,
+                        'decision' : step_run.decision,
+                }
+
+        return steps
+
+
+def start_or_resume_run(automation,data,*,run_id = None,mode = 'live'):
+        """
+        The run this execution belongs to: the one it was asked to resume, or a new one.
+
+        Returns `(run, completed_steps)`. A non-empty `completed_steps` is the signal
+        the orchestrator uses to take the graph path even for an automation that
+        would otherwise run through the legacy action list - a half-done run can only
+        be resumed step by step.
+        """
+        run = None
+
+        if run_id is not None:
+                try:
+                        run = AutomationRun.objects.filter(
+                                id = run_id,automation = automation,
+                        ).first()
+                except (TypeError,ValueError,ValidationError):
+                        # A malformed id is not a crash: it means "no such run", and
+                        # the honest answer is a fresh one. UUIDField.to_python raises
+                        # Django's ValidationError, not ValueError.
+                        run = None
+
+        if run is not None:
+                if run.started_at is None:
+                        run.started_at = timezone.now()
+
+                run.status = RunStatus.RUNNING
+                run.save(update_fields = ['status','started_at','updated_at'])
+
+                return run,completed_steps_from_run(run)
+
+        if mode not in RunMode.values:
+                mode = RunMode.LIVE
+
+        run = AutomationRun.objects.create(
+                automation = automation,
+                status = RunStatus.RUNNING,
+                mode = mode,
+                trigger_payload = dict(data) if isinstance(data,Mapping) else {},
+                started_at = timezone.now(),
+        )
+
+        return run,{}
+
+
+def record_step_run(run,step,step_result):
+        """
+        Persist one step of `run`.
+
+        Keyed by `(run, step_key)` rather than appended: a retried step must update
+        its own row (attempt, duration, final status), not leave a trail of one row
+        per try that a reader would have to reconcile. `update_or_create` also means a
+        resumed run that re-executes a step cannot duplicate its history.
+        """
+        step_key = str(step_result.get('key') or '')
+
+        defaults = {
+                'step' : step if isinstance(step,AutomationStep) else None,
+                'step_type' : step_result.get('step_type') or 'action',
+                'status' : step_result.get('status') or StepRunStatus.RUNNING,
+                'attempt' : step_result.get('attempt') or 1,
+                'input' : step_result.get('input') or {},
+                'output' : step_result.get('output'),
+                'decision' : step_result.get('decision'),
+                'error' : step_result.get('error') or '',
+                'duration_ms' : step_result.get('duration_ms'),
+        }
+
+        step_run,_created = AutomationStepRun.objects.update_or_create(
+                run = run,step_key = step_key,defaults = defaults,
+        )
+
+        return step_run
+
+
+def finish_run(run,*,status,context = None,decision = None,error_message = ''):
+        """
+        Close (or park) a run. Returns the row, saved.
+        """
+        run.status = status
+
+        if context is not None:
+                run.context = context if isinstance(context,Mapping) else {}
+
+        if decision is not None:
+                run.decision = decision
+
+        run.error_message = error_message or ''
+        run.finished_at = timezone.now() if status in TERMINAL_RUN_STATUSES else None
+        run.save()
+
+        return run
 
 
 def serialize_model_instance(instance):
