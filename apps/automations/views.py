@@ -386,6 +386,15 @@ class AutomationRunReplayView(RunAccessMixin,APIView):
         def post(self,request,run_id):
                 source_run = self.get_run(request.user,run_id)
 
+                # Replaying a run that is still going would execute its steps a
+                # second time while the first pass is midway through them - a double
+                # send, not a re-run. Only a run nothing is coming for is replayable;
+                # `waiting` is excluded too, because a continuation still owns it.
+                if source_run.status not in runtime.TERMINAL_RUN_STATUSES:
+                        raise ValidationError({
+                                'status' : _("Only a finished run can be replayed"),
+                        })
+
                 mode = request.data.get('mode') or source_run.mode
 
                 if mode not in RunMode.values:

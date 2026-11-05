@@ -544,6 +544,16 @@ class AutomationStepRun(BaseModel):
                 verbose_name = _("Adım Çalıştırması")
                 verbose_name_plural = _("Adım Çalıştırmaları")
                 ordering = ['created_at']
+                # One row per (run, step). `record_step_run` keys its update_or_create
+                # on this pair, but two workers resuming the same run concurrently can
+                # both miss and both insert - leaving two rows for one step and an
+                # ambiguous history. Only the database can make that impossible.
+                constraints = [
+                        models.UniqueConstraint(
+                                fields = ['run','step_key'],
+                                name = 'unique_step_run_per_run_step_key',
+                        ),
+                ]
 
         def __str__(self):
                 return f"{self.step_key} ({self.step_type}) - {self.status}"

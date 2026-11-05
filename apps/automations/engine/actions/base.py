@@ -44,6 +44,13 @@ class BaseAction:
                 else:
                         result = dict(config)
 
+                # `_mode` is the executor's, never the tenant's. An action config
+                # key named `_mode` would otherwise win over the marker the run was
+                # started with and turn a live run into a dry one - or, worse, a dry
+                # run into a real provider call. It is re-applied from the payload
+                # below, after every merge, so nothing else can put it back.
+                result.pop('_mode',None)
+
                 if isinstance(payload,Mapping):
                         for key in payload:
                                 if key not in result:
@@ -75,6 +82,14 @@ class BaseAction:
                         # declared its own `body` keeps it.
                         if result.get('body') is None:
                                 result['body'] = rendered
+
+                # Last word on the run marker: the executor set it on the payload, so
+                # the payload wins over the config and over the flattened `trigger`
+                # copy. A caller that passed no marker (a direct action test) gets
+                # none, which means live - the same default execute() has.
+                result.pop('_mode',None)
+                if isinstance(payload,Mapping) and '_mode' in payload:
+                        result['_mode'] = payload['_mode']
 
                 return result
         

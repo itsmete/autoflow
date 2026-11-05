@@ -71,6 +71,10 @@ class AutomationOrchestrator:
 
                 runtime = self.runtime
                 run = None
+                # Bound before the try: the catch-all below must be able to ask "is
+                # there an automation to close this run around" without an
+                # UnboundLocalError masking the error that got us there.
+                automation = None
 
                 try:
                         logger.info("Automation Started")
@@ -93,6 +97,25 @@ class AutomationOrchestrator:
                                 automation,data,run_id = run_id,mode = mode,
                                 replay_of_id = replay_of_id,
                         )
+
+                        # The row is the record of what this attempt IS. `mode` can
+                        # arrive as the task default ('live'), from a continuation
+                        # that did not carry one, or from a caller that changed its
+                        # mind; none of those may relabel a dry run as live. A newly
+                        # created run was built from `mode`, so this is a no-op for
+                        # the first attempt and only matters on a resume.
+                        mode = run.mode
+
+                        # Explicit crash recovery: `run_id` without a continuation's
+                        # `start_step_key` means "finish the attempt that started with
+                        # this payload", not "run this automation with whatever the
+                        # retry sent this time". A changed payload would evaluate the
+                        # conditions and render the templates against data the run
+                        # never saw. A continuation is different: it carries the whole
+                        # context and must keep using it.
+                        if run_id is not None and start_step_key is None:
+                                persisted = run.trigger_payload
+                                data = persisted if isinstance(persisted,Mapping) else {}
 
                         if not automation.is_active:
                                 self._record(
@@ -145,13 +168,19 @@ class AutomationOrchestrator:
                                         mode = mode,
                                 )
 
-                        # ordered actions
-                        actions = automation.actions.order_by('order')
+                        # ordered actions. The same `(order, created_at)` order
+                        # sync_steps_from_actions() numbers the derived steps in, so
+                        # the legacy step keys and the graph's keys agree.
+                        actions = automation.actions.order_by('order','created_at')
 
                         result = AutomationExecutor().execute_actions(
                                 actions,data,
                                 on_action_complete = self._step_recorder(runtime,run),
                                 mode = mode,
+                                # A resumed legacy run finishes what is left: the
+                                # actions whose step run already says success are
+                                # skipped instead of sent a second time.
+                                completed_steps = completed_steps,
                         )
 
                         if result :
@@ -206,11 +235,29 @@ class AutomationOrchestrator:
                                 mode = mode,
                         )
 
-                except Exception:
+                except Exception as error:
                         # logger.error(msg, arg) treats arg as a %-format parameter; with
                         # no placeholder in the message this failed inside logging itself
                         # and swallowed the very error it was meant to report.
                         logger.exception("An unexpected error happened")
+
+                        # A run left saying 'running' forever is worse than a failed
+                        # one: nothing will ever pick it up again. Close it through the
+                        # same path every other failure takes - but only when there is
+                        # an automation and a run to close it around.
+                        if run is not None and automation is not None:
+                                try:
+                                        self._record(
+                                                runtime,automation,STATUS_FAILURE,data,
+                                                error_message = "An unexpected error happened: %s" % (error,),
+                                                run = run,
+                                                mode = mode,
+                                        )
+                                except Exception:
+                                        # Closing the run must never mask the error
+                                        # that caused it; the traceback above is the
+                                        # one someone needs.
+                                        logger.exception("Failed to close a run after an unexpected error")
 
 
         def _record(self,runtime,automation,status,execution_context,error_message = None,
@@ -285,13 +332,14 @@ class AutomationOrchestrator:
                 still the documented one (ROADMAP section 5.1), and until the graph
                 can do everything it can, it must behave identically.
 
-                A run with completed steps always takes the graph: memoization is the
-                one thing the flat list cannot do, and it is the reason the run was
-                resumed instead of restarted.
+                A run with completed steps and a graph takes the graph: memoization is
+                the one thing the flat list cannot do, and it is the reason the run
+                was resumed instead of restarted. A run with completed steps but NO
+                steps at all is the opposite case - it is a legacy automation whose
+                history lives on its actions, and walking an empty graph would report
+                a success for work that never happened. execute_actions() skips those
+                actions itself.
                 """
-                if completed_steps:
-                        return True
-
                 if start_step_key is not None:
                         return True
 
@@ -299,6 +347,9 @@ class AutomationOrchestrator:
 
                 if not steps:
                         return False
+
+                if completed_steps:
+                        return True
 
                 if any((step.step_type or 'action') != 'action' for step in steps):
                         return True

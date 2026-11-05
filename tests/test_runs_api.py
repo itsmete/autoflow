@@ -536,7 +536,9 @@ class ReplayAPITests(AccessTestCase):
 
     @patch("apps.automations.views.run_automation.delay")
     def test_the_replayed_mode_defaults_to_the_sources_and_can_be_overridden(self, delay):
-        test_source = factories.make_run(self.automation, mode=RunMode.TEST)
+        test_source = factories.make_run(
+            self.automation, status=RunStatus.SUCCESS, mode=RunMode.TEST
+        )
 
         self.client.force_authenticate(user=self.owner)
         default = self.client.post(
@@ -555,6 +557,44 @@ class ReplayAPITests(AccessTestCase):
         self.assertEqual(self._replay(self.owner, {"mode": "turbo"}).status_code,
                          status.HTTP_400_BAD_REQUEST)
         delay.assert_not_called()
+
+    @patch("apps.automations.views.run_automation.delay")
+    def test_a_run_that_is_still_active_cannot_be_replayed(self, delay):
+        # Replaying a run that is midway through its steps would execute them a
+        # second time while the first pass still owns them - a double send, not a
+        # re-run. 'waiting' is active too: a continuation still owns that run.
+        for active in (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.WAITING):
+            source = factories.make_run(self.automation, status=active)
+
+            self.client.force_authenticate(user=self.owner)
+            response = self.client.post(
+                f'/api/v1/automations/runs/{source.id}/replay/', {}, format='json'
+            )
+
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+            self.assertFalse(AutomationRun.objects.filter(replay_of=source).exists())
+
+        delay.assert_not_called()
+
+    @patch("apps.automations.views.run_automation.delay")
+    def test_every_terminal_status_can_be_replayed(self, delay):
+        terminal_statuses = (
+            RunStatus.SUCCESS, RunStatus.FAILED, RunStatus.FAILED_PERMANENTLY,
+            RunStatus.SKIPPED, RunStatus.CANCELLED,
+        )
+
+        for terminal in terminal_statuses:
+            source = factories.make_run(self.automation, status=terminal)
+
+            self.client.force_authenticate(user=self.owner)
+            response = self.client.post(
+                f'/api/v1/automations/runs/{source.id}/replay/', {}, format='json'
+            )
+
+            self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+            self.assertTrue(AutomationRun.objects.filter(replay_of=source).exists())
+
+        self.assertEqual(delay.call_count, len(terminal_statuses))
 
     def test_the_replayed_run_executes_its_steps_fresh(self):
         # The source's step 1 succeeded. The replay must run it again - otherwise a

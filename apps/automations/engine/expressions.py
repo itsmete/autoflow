@@ -34,6 +34,15 @@ RESERVED_NAMESPACES = frozenset({
         'trigger','steps','automation','tenant','branch','now','vars',
 })
 
+# Names the executor owns for the duration of a pass. They are kept out of the
+# context's top level for the same reason the namespaces above are, but they are
+# deliberately NOT in RESERVED_NAMESPACES: build_execution_context never provides
+# them, and `_mode` is injected by execute_graph() and removed again before the
+# context is persisted. A `set_variable` step named `_mode` used to be able to
+# overwrite the run's dry-run marker mid-walk; a tenant-authored variable must never
+# decide whether a step has an effect.
+EXECUTOR_NAMESPACES = frozenset({'_mode'})
+
 
 def _meta(obj):
         """

@@ -27,7 +27,7 @@ from types import SimpleNamespace
 from .actions import get_action_class
 from .evaluator import ConditionEvaluator
 from .exceptions import ExecutionError
-from .expressions import RESERVED_NAMESPACES, resolve_value
+from .expressions import EXECUTOR_NAMESPACES, RESERVED_NAMESPACES, resolve_value
 
 
 # The step types this executor knows how to run. Strings rather than the TextChoices
@@ -258,7 +258,8 @@ class AutomationExecutor:
                 return status
 
 
-        def execute_actions(self,actions,data,on_action_complete = None,mode = 'live'):
+        def execute_actions(self,actions,data,on_action_complete = None,mode = 'live',
+                            completed_steps = None):
                 """
                 Run an ordered list of AutomationAction rows.
 
@@ -272,19 +273,55 @@ class AutomationExecutor:
 
                 `mode='test'` is a dry run (RunMode.TEST): the payload is marked with
                 `_mode` so no action class calls a provider or an HTTP endpoint, and
-                the step's output is what would have been sent.
+                the step's output is what would have been sent. The marker is written
+                by THIS method and overrides any `_mode` the payload itself carries:
+                a tenant payload must not be able to silence a live run (or turn a
+                dry one live).
+
+                `completed_steps` is additive and optional too. It is the same
+                `{step_key: {'status': 'success', ...}}` mapping `execute_graph`
+                takes, and it is how a resumed run finishes the actions it has not
+                done yet instead of sending the completed ones again. Step keys are
+                positional (`1..n` in `(order, created_at)` order), exactly the keys
+                `sync_steps_from_actions()` gives the steps derived from these same
+                actions, so a legacy run and its graph agree on what "step 2" means.
                 """
                 if not actions:
                         raise ExecutionError("No action is found")
+
+                # The one order both paths number steps in. `sync_steps_from_actions`
+                # reads `(order, created_at)`; a caller's iteration order must not
+                # shift the keys out from under a resume.
+                actions = self._ordered_actions(actions)
 
                 # A copy, once: every action of the list sees the same marked payload,
                 # and the caller's dict is never mutated under it.
                 payload = data
 
-                if mode == 'test' and isinstance(data,Mapping):
-                        payload = dict(data,_mode = 'test')
+                if isinstance(data,Mapping):
+                        payload = dict(data,_mode = mode)
+                elif mode == 'test':
+                        # A non-mapping payload (a bare list from a webhook) still
+                        # needs the marker, or a dry run would call the provider.
+                        payload = {'_mode' : mode}
 
-                for action in actions:
+                completed = {
+                        str(key) : value
+                        for key,value in (completed_steps or {}).items()
+                        if isinstance(value,Mapping)
+                }
+
+                for position,action in enumerate(actions,start = 1):
+                        key = str(position)
+
+                        saved = completed.get(key)
+                        if saved is not None and saved.get('status') == RESULT_SUCCESS:
+                                # Memoized: an earlier pass already performed this
+                                # action. Re-running it would send the message twice,
+                                # which is the whole reason the run was resumed rather
+                                # than restarted.
+                                continue
+
                         started = time.monotonic()
                         status = RESULT_SUCCESS
                         try:
@@ -297,16 +334,34 @@ class AutomationExecutor:
                                         status = RESULT_SUCCESS
 
                                 elif getattr(action,'on_failure',None) == ON_FAILURE_STOP:
-                                        self._action_complete(action,status,started,on_action_complete)
+                                        self._action_complete(action,status,started,on_action_complete,key)
                                         return False
 
                                 elif getattr(action,'on_failure',None) == ON_FAILURE_CONTINUE:
                                         pass
 
-                        self._action_complete(action,status,started,on_action_complete)
+                        self._action_complete(action,status,started,on_action_complete,key)
 
 
                 return True
+
+
+        def _ordered_actions(self,actions):
+                """
+                The action list in `(order, created_at)` order.
+
+                `created_at` is coerced for the same reason `_edge_sort_key` coerces
+                it: a saved row has a datetime and an unsaved one has None, and
+                comparing the two in one tuple raises TypeError mid-run.
+                """
+                def sort_key(action):
+                        created = getattr(action,'created_at',None)
+                        return (
+                                getattr(action,'order',0) or 0,
+                                created.timestamp() if isinstance(created,datetime) else 0,
+                        )
+
+                return sorted(actions,key = sort_key)
 
 
         def _retry(self,action,data):
@@ -886,7 +941,8 @@ class AutomationExecutor:
                         for name,value in saved['output'].items():
                                 context['vars'][name] = value
 
-                                if name not in RESERVED_NAMESPACES:
+                                if name not in RESERVED_NAMESPACES \
+                                                and name not in EXECUTOR_NAMESPACES:
                                         context[name] = value
 
                 return {
@@ -903,19 +959,26 @@ class AutomationExecutor:
                 }
 
 
-        def _action_complete(self,action,status,started,on_action_complete):
+        def _action_complete(self,action,status,started,on_action_complete,key = None):
                 """
                 Report one legacy action to the caller, if it asked.
 
                 `output` is None: execute_actions() only ever learns whether the action
                 sent. Nothing is invented here - a fabricated output would become the
                 value a later expression reads.
+
+                `key` is the positional step key. It used to be `action.order`, which
+                only coincided with the graph's keys when the orders happened to be
+                1..n; a resume then looked for step "2" while the history said "10".
                 """
                 if on_action_complete is None:
                         return
 
+                if key is None:
+                        key = str(getattr(action,'order',''))
+
                 on_action_complete(action,{
-                        'key' : str(getattr(action,'order','')),
+                        'key' : key,
                         'step_type' : STEP_ACTION,
                         'status' : status,
                         'output' : None,
@@ -992,8 +1055,10 @@ class AutomationExecutor:
 
                         # Also reachable without the `vars.` prefix, except for the
                         # names the context already owns - `vars.trigger = x` must
-                        # not shadow the trigger namespace every expression uses.
-                        if name not in RESERVED_NAMESPACES:
+                        # not shadow the trigger namespace every expression uses,
+                        # and `vars._mode = live` must not turn a dry run real.
+                        if name not in RESERVED_NAMESPACES \
+                                        and name not in EXECUTOR_NAMESPACES:
                                 context[name] = resolved[name]
 
                 return resolved
