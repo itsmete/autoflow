@@ -156,6 +156,14 @@ REST_FRAMEWORK = {
 AUTOFLOW_WEBHOOK_REPLAY_WINDOW = env.int('AUTOFLOW_WEBHOOK_REPLAY_WINDOW',default=300)
 
 
+# How long a webhook delivery is remembered for deduplication, in seconds. One day
+# matches the retry horizon of the senders this is built for; a delivery older than
+# this is a new delivery, not a retry.
+AUTOFLOW_WEBHOOK_IDEMPOTENCY_TTL_SECONDS = env.int(
+        'AUTOFLOW_WEBHOOK_IDEMPOTENCY_TTL_SECONDS',default=86400
+)
+
+
 
 from datetime import timedelta
 
@@ -235,3 +243,14 @@ CELERY_TIMEZONE = 'Europe/Istanbul'
 # PREVENT MASS PAYLOADS 
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
+
+
+# Periodic tasks owned by the codebase rather than by django-celery-beat's database.
+# The task is named by its full import path because beat resolves it as a string;
+# a short name would only fail later, inside the worker.
+CELERY_BEAT_SCHEDULE = {
+        'cleanup-webhook-deliveries-hourly' : {
+                'task' : 'apps.automations.tasks.cleanup_webhook_deliveries',
+                'schedule' : timedelta(hours=1),
+        },
+}

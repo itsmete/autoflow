@@ -487,21 +487,25 @@ class WebhookSignatureTests(TestCase):
         self.secret = self.trigger.config["secret_key"]
 
     def _post(self, body=None, secret=None, timestamp=None, trigger_id=None,
-              signature=None):
+              signature=None, idempotency_key=None):
         body = json.dumps({"order_id": 1}) if body is None else body
         timestamp = int(time.time()) if timestamp is None else timestamp
         if signature is None:
             signature = compute_signature(secret or self.secret, timestamp, body)
 
+        headers = {
+            "X-Webhook-Id": str(trigger_id or self.trigger.id),
+            "X-Webhook-Timestamp": str(timestamp),
+            "X-Webhook-Signature": signature,
+        }
+        if idempotency_key is not None:
+            headers["Idempotency-Key"] = idempotency_key
+
         return self.client.post(
             '/api/v1/automations/webhook/',
             data=body,
             content_type='application/json',
-            headers={
-                "X-Webhook-Id": str(trigger_id or self.trigger.id),
-                "X-Webhook-Timestamp": str(timestamp),
-                "X-Webhook-Signature": signature,
-            },
+            headers=headers,
         )
 
     def _assert_rejected(self, response):
@@ -588,10 +592,23 @@ class WebhookSignatureTests(TestCase):
     def test_the_endpoint_is_throttled(self, mock_delay):
         # Authentication rejects bad callers only after a database lookup, so an
         # unthrottled public endpoint is a free way to make us do work.
-        self.assertEqual(self._post().status_code, status.HTTP_202_ACCEPTED)
-        self.assertEqual(self._post().status_code, status.HTTP_202_ACCEPTED)
+        #
+        # The first two requests must be DISTINCT deliveries: identical bodies would
+        # now dedupe (200, no dispatch) and the test would be measuring the
+        # idempotency layer instead of the throttle.
+        self.assertEqual(
+            self._post(body=json.dumps({"order_id": 1})).status_code,
+            status.HTTP_202_ACCEPTED,
+        )
+        self.assertEqual(
+            self._post(body=json.dumps({"order_id": 2})).status_code,
+            status.HTTP_202_ACCEPTED,
+        )
 
-        self.assertEqual(self._post().status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertEqual(
+            self._post(body=json.dumps({"order_id": 3})).status_code,
+            status.HTTP_429_TOO_MANY_REQUESTS,
+        )
 
 
 class TemplateAPITests(CacheTestMixin, TestCase):

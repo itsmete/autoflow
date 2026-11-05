@@ -1,5 +1,7 @@
 from celery import shared_task
+from django.utils import timezone
 from .engine.orchestrator import AutomationOrchestrator
+from .models import WebhookDelivery
 from .scheduling import record_scheduled_run
 
 
@@ -73,3 +75,21 @@ def run_automation(automation_id ,data ,source = 'manual' ,start_step_key = None
                 record_scheduled_run(automation_id)
 
         return result
+
+
+@shared_task
+def cleanup_webhook_deliveries():
+        """
+        Delete idempotency records whose window has passed.
+
+        Expiry is enforced by the claim path itself - an expired row is reclaimed
+        immediately, whether or not this ever runs - so cleanup is only about
+        bounding table growth, not correctness. It returns the number of rows
+        removed because "did the beat entry fire and do anything" is otherwise
+        invisible.
+        """
+        deleted, _per_model = WebhookDelivery.objects.filter(
+                expires_at__lte = timezone.now()
+        ).delete()
+
+        return deleted

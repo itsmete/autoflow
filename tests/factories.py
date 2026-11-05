@@ -7,6 +7,9 @@ password="pass", another asserted a nested serializer as a bare uuid). Build it 
 once so a model change breaks one file, not fifteen.
 """
 import uuid
+from datetime import timedelta
+
+from django.utils import timezone
 
 from apps.automations.models import (
     Automation,
@@ -19,6 +22,7 @@ from apps.automations.models import (
     AutomationStepRun,
     AutomationTrigger,
     Template,
+    WebhookDelivery,
 )
 from apps.channels.models import Channel
 from apps.tenants.models import Branch, Tenant
@@ -109,6 +113,16 @@ def make_trigger(automation, trigger_type="manual", config=None, initial_data=No
         trigger_type=trigger_type,
         config=config if config is not None else {},
         initial_data=initial_data if initial_data is not None else {},
+    )
+
+
+def make_webhook_delivery(trigger, key="test-key", payload_hash="a" * 64,
+                          expires_at=None):
+    return WebhookDelivery.objects.create(
+        trigger=trigger,
+        key=key,
+        payload_hash=payload_hash,
+        expires_at=expires_at or timezone.now() + timedelta(days=1),
     )
 
 

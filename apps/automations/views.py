@@ -2,6 +2,15 @@ from rest_framework.views import APIView,Response,status
 from rest_framework.throttling import ScopedRateThrottle
 from .authentication import TriggerSecretKeyAuthentication
 from .tasks import run_automation
+from .webhook_deliveries import (
+        CONFLICT,
+        CREATED,
+        DUPLICATE,
+        claim_webhook_delivery,
+        payload_digest,
+        release_webhook_delivery,
+)
+from django.conf import settings
 from django.utils.translation import gettext_lazy as _
 from django.shortcuts import get_object_or_404
 from .models import Automation,TriggerType,AutomationTrigger,Template,\
@@ -30,9 +39,67 @@ class WebhookAutomationView(APIView):
 
         def post(self,request):
                 automation = request.auth.automation
+
+                # Read the raw body BEFORE `request.data`. The shared-secret scheme
+                # never touches the body, so this is the first read on that path; on
+                # the signed path authentication already read it and DRF cached the
+                # bytes. The digest must cover the bytes the caller signed, not a
+                # re-serialization of the parsed object.
+                raw_body = request.body
                 payload = request.data
 
-                run_automation.delay(str(automation.id), payload)
+                key = (request.headers.get('Idempotency-Key') or '').strip()
+
+                # Same bound as AutomationRun.idempotency_key. A blank header is the
+                # "caller did not choose a key" case, not an empty key.
+                if len(key) > 128:
+                        raise ValidationError({
+                                'Idempotency-Key' : _("Idempotency-Key must be at most 128 characters"),
+                        })
+
+                payload_hash = payload_digest(raw_body)
+
+                # No caller key: the body itself is the key. Retries resend the same
+                # bytes, so they collide exactly; a different body is a new delivery.
+                delivery_key = key or f"sha256:{payload_hash}"
+
+                ttl_seconds = getattr(settings,'AUTOFLOW_WEBHOOK_IDEMPOTENCY_TTL_SECONDS',86400)
+
+                state, delivery = claim_webhook_delivery(
+                        request.auth,delivery_key,payload_hash,ttl_seconds
+                )
+
+                if state == CONFLICT:
+                        return Response(
+                                data = {
+                                        'message' : _("Idempotency key already used with a different payload"),
+                                },
+                                status = status.HTTP_409_CONFLICT
+                        )
+
+                if state == DUPLICATE:
+                        return Response(
+                                data = {
+                                        'message' : _("Duplicate delivery ignored"),
+                                        'duplicate' : True,
+                                },
+                                status = status.HTTP_200_OK
+                        )
+
+                # Claim first, dispatch second: the row is what makes this request the
+                # one allowed to run. If the broker rejects the task we give the claim
+                # back and let the caller retry; leaving it would turn a transient
+                # broker failure into "we already processed this", which is worse.
+                #
+                # Known window: a process crash between the claim and the dispatch
+                # loses this delivery until the 24h TTL expires - the caller's retry
+                # then sees a duplicate and is not re-dispatched. Closing that needs a
+                # transactional outbox, which is out of scope here.
+                try:
+                        run_automation.delay(str(automation.id), payload)
+                except Exception:
+                        release_webhook_delivery(delivery,payload_hash)
+                        raise
 
                 return Response(
                         data= {"message":_("Automation Triggered")},

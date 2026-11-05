@@ -217,6 +217,49 @@ class AutomationTrigger(BaseModel):
                 super().save(*args,**kwargs)
 
 
+class WebhookDelivery(BaseModel):
+        """
+        One accepted webhook delivery, kept only long enough to recognise its retry.
+
+        This is not a delivery log: nothing about the body is stored. `payload_hash`
+        is the raw-body SHA-256, which is all the conflict check needs, and `key` is
+        either the caller's Idempotency-Key or the same hash prefixed with 'sha256:'
+        when the caller sent none. Storing the payload itself would turn a
+        deduplication table into a second copy of every webhook ever received.
+
+        The unique constraint is the concurrency contract, not a nicety: two
+        identical requests can pass every application-level check at the same moment,
+        and only the database can decide which one gets to dispatch.
+        """
+        trigger = models.ForeignKey(
+                'AutomationTrigger',on_delete = models.CASCADE,
+                related_name = 'webhook_deliveries',verbose_name = _("Tetikleyici")
+        )
+
+        key = models.CharField(max_length = 128,verbose_name = _("Idempotency Anahtarı"))
+
+        # Always the raw-body digest, even when `key` is the caller's own string.
+        # It is what tells a retry (same body) from a conflict (same key, new body).
+        payload_hash = models.CharField(max_length = 64,verbose_name = _("Veri Özeti"))
+
+        # Indexed because the cleanup task and every claim both filter on it. An
+        # expired row is reclaimable immediately even if cleanup has not run yet.
+        expires_at = models.DateTimeField(db_index = True,verbose_name = _("Son Geçerlilik"))
+
+        class Meta:
+                verbose_name = _("Webhook Teslimatı")
+                verbose_name_plural = _("Webhook Teslimatları")
+                constraints = [
+                        models.UniqueConstraint(
+                                fields = ('trigger','key'),
+                                name = 'unique_webhook_delivery_per_trigger_key'
+                        ),
+                ]
+
+        def __str__(self):
+                return f"{self.trigger_id} - {self.expires_at}"
+
+
 class AutomationCondition(BaseModel):
         automation = models.ForeignKey('Automation',on_delete=models.CASCADE,related_name='conditions')
 
