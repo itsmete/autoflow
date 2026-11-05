@@ -3,9 +3,9 @@
 _Last updated: 2026-11-05_
 
 ## Snapshot
-- Branch: `develop`; latest application commit: `893d6d6` (`feat(automations): retry failed live runs on the same run`). Later `docs(agent)` commits may follow; use git for the exact HEAD.
-- `develop` is ahead of `origin/develop`; `master` remains pre-merge at `8052eaf`.
-- Full suite verified after T-208: **751 tests OK, 0 failures** (`./run_tests.sh`, 2026-11-05, ~115s); `makemigrations --check` is clean.
+- Checked out: `develop`. Newest commit `079d7f2` (`docs(opencode): refine multi-agent orchestrator, worker and reviewer roles`); latest application commit `893d6d6` (`feat(automations): retry failed live runs on the same run`).
+- `master` was fast-forwarded to `develop` on 2026-11-05 and the two trees are identical. Both branches are ahead of `origin/*`; **pushing is the human's step, no agent runs `git push`** (remote state at takeover: `origin/develop` = `8ba521e`, `origin/master` = `8052eaf`).
+- Full suite verified after T-208 (the same tree `master` now points at): **751 tests OK, 0 failures** (`./run_tests.sh`, 2026-11-05, ~115s); `makemigrations --check` is clean.
 
 ## Done
 - **Faz 0** (`0f296e7`): scheduling fixes + webhook HMAC/replay/throttle.
@@ -17,11 +17,9 @@ _Last updated: 2026-11-05_
 - **T-204** (`dd33036`): trigger-scoped WebhookDelivery idempotency, raw-body SHA-256 fallback, 202/200/409 contract, migration `0014`, immediate expired reclaim, 24h TTL and hourly cleanup; final reviewer APPROVE.
 - **T-208** (`893d6d6`): same-run queue retry with pre-minted/scoped identity, memoization, exponential backoff/jitter/cap, QUEUED/RUNNING/FAILED_PERMANENTLY lifecycle, final-only failure fan-out, wait-continuation handling and once-only scheduled budget; cross-tenant and explicit-id review blockers fixed; final reviewer APPROVE.
 
-## Uncommitted work (pre-existing at takeover)
-- **Finished, awaiting review/commit:** `.opencode/agents/orchestrator.md`, `.opencode/agents/reviewer.md`, `.opencode/agents/worker.md` — role/model/permission/workflow updates.
-- **Finished, awaiting review/commit:** `.opencode/commands/kickoff.md`, `.opencode/commands/run-task.md` — updated orchestration commands.
-- **Finished, awaiting review/commit:** new `.opencode/agents/orchestrator-lite.md`, `.opencode/agents/orchestrator-pro.md`, `.opencode/commands/handoff.md`.
-- **Half-done:** `AGENTS.md` — section 9 was added, but its final five-item cleanup checklist (title, stale status/test counts, §8.7 note, `CLAUDE.md` pointer) is not applied.
+## Uncommitted work
+- `.opencode/**` harness edits are **committed** in `079d7f2` (orchestrator lite/pro, reviewer, worker, handoff/kickoff/run-task commands).
+- **`AGENTS.md` only:** section 9 (multi-agent workflow) sits in the working tree but is still uncommitted, and its five-item cleanup checklist (title, stale §2 status paragraph, §5 test counts, §8.7 note, `CLAUDE.md` pointer) is not applied. Human decision on 2026-11-05 was to leave it uncommitted rather than publish a half-done section.
 - No uncommitted application source, tests or migrations.
 
 ## Task in flight
@@ -37,4 +35,4 @@ _Last updated: 2026-11-05_
 ## Next 3 steps
 1. **Next session:** start T-205 (`wait_for_event` + `default`/`bulk` queue isolation) with a fresh worker and the T-204/T-208 delivery/retry contracts as constraints.
 2. **Operational verification:** real broker/backoff behavior and `./run_tests.sh --redis` remain unverified; real Redis is blocked on T-090 Docker permission.
-3. **Housekeeping decision:** pre-existing `.opencode` harness edits and the half-done `AGENTS.md` cleanup remain uncommitted and were not changed by this session's application work.
+3. **Housekeeping:** `AGENTS.md` section 9 is uncommitted and its five-item cleanup checklist is still pending — finish it in one pass (or drop it) before the next push so master and the working tree agree.

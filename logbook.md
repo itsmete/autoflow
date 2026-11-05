@@ -1792,3 +1792,29 @@ redelivered `retry_attempt=0` bütçeyi resetleyebilir; retry task'in kendi idem
 Backoff sürerken beat yeni run'lar başlatıp `n` bütçesini geçici olarak aşabilir, çünkü sayaç
 final dönüşte harcanıyor. ROADMAP'taki fiziksel dead-letter kuyruğu değil, terminal DB durumu
 `failed_permanently` uygulandı. Broker/Postgres concurrency ve gerçek Redis koşusu yok.
+
+---
+
+## 2026-11-05 — `master` senkronu, harness commit'i ve push hazırlığı
+
+**Ne ve neden:** `master` hâlâ `8052eaf`'te, `develop`'ın 30 commit gerisindeydi; Faz 0–2
+çalışması yalnızca `develop`'ta duruyordu. İnsan talebiyle dal senkronlandı ve push öncesi
+çalışma ağacı temizlendi.
+
+**Nasıl:** Önce takılı kalan `.opencode` harness düzenlemeleri (orchestrator lite/pro,
+worker, reviewer, kickoff/run-task/handoff) `079d7f2` olarak commit'lendi — bunlar zaten
+bitmişti ve `docs(agent)` commit'lerinden ayrı tutuldu. `master`, `develop`'ın atası olduğu
+için `git merge --ff-only develop` ile ilerletildi; merge commit'i üretilmedi, böylece
+geçmiş lineer kaldı. `AGENTS.md` (9. bölüm eklenmiş, 5 maddelik düzeltme listesi yarım)
+bilinçli olarak commit **edilmedi**: insan kararı yarım bölümün `master`'a gitmemesiydi.
+Dosya iki dalda farklı olduğu için checkout sırasında `git stash` ile kenara alınıp
+`develop`'a dönüşte geri alındı (stash temiz kapandı, kayıp yok).
+
+**Doğrulama:** `master` = `develop` = aynı ağaç; ağaçta 751 test OK ve
+`makemigrations --check` temiz koşusu var (T-208 sonrası). Merge sonrası yeni kod
+olmadığı için suite tekrar koşulmadı. Push **yapılmadı** — kural gereği insan yapar.
+
+**Bilerek bırakılanlar / riskler:** `origin/develop` 49, `origin/master` 30 commit geride;
+push sonrası CI/deploy ve gerçek broker/Redis davranışı doğrulanmadı. `AGENTS.md` hâlâ
+kirli, yani `git status` temiz değil — bir sonraki paketlemede ya tamamlanmalı ya geri
+alınmalı.
