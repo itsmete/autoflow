@@ -1712,3 +1712,36 @@ ve yalnızca kaynak/test/migration dosyaları açık path'lerle commit'lendi.
 sözleşmesi olarak korundu; manual-trigger gate'i ayrı bir ürün kararı. Adım grafiğinin
 crash ile resume arasında silinmesi eski grafik anahtarlarını legacy konum anahtarlarıyla
 eşleştiremeyebilir. Gerçek Redis koşusu hâlâ T-090'daki Docker iznine bağlı.
+
+---
+
+## 2026-11-05 — Webhook idempotency ve TTL (T-204)
+
+**Ne ve neden:** Webhook ucu aynı isteği her gelişinde yeniden kuyruğa atıyordu; HMAC
+replay penceresi imzalı isteğin yaşını sınırlasa da işlem tekrarını engellemiyordu.
+ROADMAP §4.7'nin `WebhookDelivery` hedefi için önce public sözleşme insanla netleştirildi:
+tekil kapsam `(trigger, Idempotency-Key)`, anahtar yoksa ham gövdenin SHA-256'sı,
+aynı anahtar+farklı gövdeye **409**, TTL **24 saat + gerçek periyodik temizlik**.
+
+**Nasıl (`dd33036`):** Migration `0014` ile yalnızca trigger, anahtar, gövde özeti ve
+`expires_at` tutan `WebhookDelivery` eklendi; ham payload saklanmıyor. `(trigger,key)`
+üzerindeki DB unique constraint yarışın hakemi. İlk teslim 202 ve bir dispatch; aynı
+baytlarla retry 200 `duplicate=true` ve dispatch yok; aynı anahtarla farklı baytlar 409
+ve dispatch yok. Süresi geçen kayıt cleanup'ı beklemeden atomik olarak yeniden sahipleniliyor,
+duplicate/conflict TTL'yi uzatmıyor. Saatlik Celery beat task'i expired satırları siliyor.
+Dispatch öncesi claim duplicate side effect'i engelliyor; broker `.delay()` hatasında yeni
+claim pk+hash korumasıyla bırakılıp istisna yeniden fırlatılıyor. Manual/scheduled/signal/
+replay/dry-run yolları dedup dışında. Mevcut throttle testi artık aynı gövdeyi değil,
+farklı imzalı gövdeleri gönderiyor; böylece dedup değil rate limit ölçülüyor.
+
+**Doğrulama:** Yeni idempotency modülü 20 test; webhook API ve scheduling birlikte 83 test;
+tam suite **724 test OK** (~116s), `makemigrations --check` temiz. Adversarial reviewer
+**APPROVE**: tetikleyici/kiracı izolasyonu, ham bayt-HMAC uyumu, 202/200/409 sözleşmesi,
+TTL ve migration doğrulandı.
+
+**Bilerek bırakılanlar / riskler:** Claim ile `.delay()` arasında process crash olursa
+TTL bitene kadar teslimat kaybolabilir; broker hatasında claim bırakılırken duplicate
+istek kısa süreliğine 200 görmüş olabilir. Bunların gerçek çözümü transactional outbox/
+delivery state; kapsam dışı. Release'in kendisi DB hatası verirse broker istisnasını
+maskeleyebilir ve nadir claim-release yarışında transient 500 mümkün. Gerçek Postgres
+concurrency testi, deployment beat gözlemi ve gerçek Redis koşusu yapılmadı.
