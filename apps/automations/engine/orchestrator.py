@@ -67,7 +67,8 @@ class AutomationOrchestrator:
                 return self._runtime
 
         def run(self,automation_id,data,start_step_key = None,schedule_continuation = None,
-                run_id = None,mode = 'live',replay_of_id = None):
+                run_id = None,mode = 'live',replay_of_id = None,new_run_id = None,
+                notify_failure = True):
 
                 runtime = self.runtime
                 run = None
@@ -94,8 +95,8 @@ class AutomationOrchestrator:
                         # effect anywhere, and "anywhere" includes the fan-out at the
                         # end of this method.
                         run,completed_steps = runtime.start_or_resume_run(
-                                automation,data,run_id = run_id,mode = mode,
-                                replay_of_id = replay_of_id,
+                                automation,data,run_id = run_id,new_run_id = new_run_id,
+                                mode = mode,replay_of_id = replay_of_id,
                         )
 
                         # The row is the record of what this attempt IS. `mode` can
@@ -166,6 +167,7 @@ class AutomationOrchestrator:
                                         schedule_continuation,run = run,
                                         completed_steps = completed_steps,
                                         mode = mode,
+                                        notify_failure = notify_failure,
                                 )
 
                         # ordered actions. The same `(order, created_at)` order
@@ -194,10 +196,16 @@ class AutomationOrchestrator:
                                 return True
 
                         logger.info("Automation has been failed")
-                        # No log on this path (unchanged), but the run must not be
-                        # left saying 'running' forever.
-                        if run is not None:
-                                runtime.finish_run(run,status = RUN_STATUS[STATUS_FAILURE],context = data)
+                        # The run must not be left saying 'running' forever, and a
+                        # failure has to reach the followers through the same exit as
+                        # every other failure - otherwise the queue retry would suppress
+                        # a fan-out that never had another path to happen on.
+                        self._record(
+                                runtime,automation,STATUS_FAILURE,data,
+                                run = run,
+                                mode = mode,
+                                notify_failure = notify_failure,
+                        )
 
                         return False
 
@@ -220,6 +228,7 @@ class AutomationOrchestrator:
                                 decision = e.decision.as_dict() if e.decision is not None else None,
                                 run = run,
                                 mode = mode,
+                                notify_failure = notify_failure,
                         )
 
                 except ExecutionError as e:
@@ -233,6 +242,7 @@ class AutomationOrchestrator:
                                 error_message = str(e),
                                 run = run,
                                 mode = mode,
+                                notify_failure = notify_failure,
                         )
 
                 except Exception as error:
@@ -252,6 +262,7 @@ class AutomationOrchestrator:
                                                 error_message = "An unexpected error happened: %s" % (error,),
                                                 run = run,
                                                 mode = mode,
+                                                notify_failure = notify_failure,
                                         )
                                 except Exception:
                                         # Closing the run must never mask the error
@@ -261,7 +272,8 @@ class AutomationOrchestrator:
 
 
         def _record(self,runtime,automation,status,execution_context,error_message = None,
-                        decision = None,notify = True,run = None,mode = 'live'):
+                        decision = None,notify = True,run = None,mode = 'live',
+                        notify_failure = True):
                 """
                 Write the run's log and, for a finished run, tell the followers.
 
@@ -278,6 +290,11 @@ class AutomationOrchestrator:
                 A must not start the LIVE automation B that follows it. That is the one
                 place where "no effect" costs something other than a provider call, and
                 it is the one that would actually hurt.
+
+                `notify_failure` is the queue retry's handbrake: while another attempt
+                is still coming, a failure is not the end of the run and must not start
+                the followers. Only a final/permanent failure is announced, once.
+                Success and skipped are unaffected - they are already final.
                 """
                 runtime.create_log(
                         automation = automation,
@@ -296,8 +313,10 @@ class AutomationOrchestrator:
                                 error_message = error_message or '',
                         )
 
-                if notify and mode != 'test' and status in TERMINAL_STATUSES \
-                                and automation.is_active:
+                failure_is_final = status != STATUS_FAILURE or notify_failure
+
+                if notify and failure_is_final and mode != 'test' \
+                                and status in TERMINAL_STATUSES and automation.is_active:
                         runtime.notify_automation_completed(automation,status,execution_context)
 
 
@@ -381,7 +400,7 @@ class AutomationOrchestrator:
 
 
         def _run_graph(self,runtime,automation,data,decision,start_step_key,schedule_continuation,
-                        run = None,completed_steps = None,mode = 'live'):
+                        run = None,completed_steps = None,mode = 'live',notify_failure = True):
                 context = self._execution_context(automation,data,start_step_key)
 
                 result = AutomationExecutor().execute_graph(
@@ -432,6 +451,7 @@ class AutomationOrchestrator:
                         decision = decision.as_dict(),
                         run = run,
                         mode = mode,
+                        notify_failure = notify_failure,
                 )
 
                 # 'waiting' is not a failure: the run did everything it could and the

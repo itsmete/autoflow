@@ -7,6 +7,7 @@ are all '*', which is precisely the shape that cannot tell a correct field mappi
 from a scrambled one. Every expression here uses distinct, non-wildcard values.
 """
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -260,16 +261,21 @@ class RunSourceTests(TestCase):
                 "cron_expression": "0 9 * * 1",
             },
         )
+        # A run that SUCCEEDS: a failing one is now retried by the queue, and the
+        # budget is deliberately spent on the final return, not on the first
+        # attempt. This class is about the source flag, so keep the run final.
+        step = factories.make_step(self.automation, key="hook", action_type="webhook")
+        factories.make_edge(self.automation, None, step)
 
     def test_a_manual_run_does_not_spend_the_budget(self):
-        # The automation has no actions, so the orchestrator fails and logs; that is
-        # beside the point here - what matters is that the counter did not move.
-        run_automation(str(self.automation.id), {})
+        with patch("apps.automations.engine.actions.send_webhook.requests.request"):
+            run_automation(str(self.automation.id), {})
 
         self.assertEqual(AutomationTrigger.objects.get().run_count, 0)
 
     def test_a_beat_driven_run_spends_the_budget(self):
-        run_automation(str(self.automation.id), {}, source="scheduled")
+        with patch("apps.automations.engine.actions.send_webhook.requests.request"):
+            run_automation(str(self.automation.id), {}, source="scheduled")
 
         self.assertEqual(AutomationTrigger.objects.get().run_count, 1)
 

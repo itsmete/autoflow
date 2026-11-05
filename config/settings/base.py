@@ -164,6 +164,17 @@ AUTOFLOW_WEBHOOK_IDEMPOTENCY_TTL_SECONDS = env.int(
 )
 
 
+# Queue-level retry of a failed LIVE run (Faz 2.D.2). The retry is dispatched on the
+# SAME AutomationRun, so memoized steps are not paid for twice. The countdown is
+# exponential with jitter so a provider outage does not turn every failed run into a
+# synchronized retry storm. MAX_RETRIES is re-dispatches, not attempts: 3 means the
+# initial attempt plus at most three more.
+AUTOFLOW_RUN_RETRY_MAX_RETRIES = env.int('AUTOFLOW_RUN_RETRY_MAX_RETRIES',default=3)
+AUTOFLOW_RUN_RETRY_BASE_SECONDS = env.int('AUTOFLOW_RUN_RETRY_BASE_SECONDS',default=30)
+AUTOFLOW_RUN_RETRY_MAX_SECONDS = env.int('AUTOFLOW_RUN_RETRY_MAX_SECONDS',default=3600)
+AUTOFLOW_RUN_RETRY_JITTER = env.float('AUTOFLOW_RUN_RETRY_JITTER',default=0.25)
+
+
 
 from datetime import timedelta
 

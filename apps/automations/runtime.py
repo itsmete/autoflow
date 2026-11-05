@@ -15,6 +15,7 @@ Two rules for this module:
     importable without a configured Django project, which is the whole point.
 """
 import json
+import uuid
 from collections.abc import Mapping
 
 from django.apps import apps
@@ -122,7 +123,8 @@ def completed_steps_from_run(run):
         return steps
 
 
-def start_or_resume_run(automation,data,*,run_id = None,mode = 'live',replay_of_id = None):
+def start_or_resume_run(automation,data,*,run_id = None,new_run_id = None,mode = 'live',
+                replay_of_id = None):
         """
         The run this execution belongs to: the one it was asked to resume, or a new one.
 
@@ -136,6 +138,14 @@ def start_or_resume_run(automation,data,*,run_id = None,mode = 'live',replay_of_
         a replay rebuilds the row from its source), but the row is the record of what
         this attempt is: rewriting it here would let a live dispatch relabel a dry run
         after the fact.
+
+        `new_run_id` exists only for a caller that has to know the id of the row it is
+        about to create - the queue retry path, which must be able to re-dispatch the
+        SAME run before the first attempt has returned (Faz 2.D.2). It is applied
+        whenever the scoped lookup did not resolve, so a caller that supplied an
+        unknown, malformed or foreign `run_id` still gets a nameable fresh row. A
+        caller that supplies neither keeps the old "fresh row with a default id"
+        behaviour.
         """
         run = None
 
@@ -163,6 +173,17 @@ def start_or_resume_run(automation,data,*,run_id = None,mode = 'live',replay_of_
         if mode not in RunMode.values:
                 mode = RunMode.LIVE
 
+        create_kwargs = {}
+
+        if new_run_id is not None:
+                try:
+                        create_kwargs['id'] = uuid.UUID(str(new_run_id))
+                except (TypeError,ValueError,AttributeError):
+                        # A malformed pre-minted id is not a crash either; the row is
+                        # still created, just not nameable by the caller. That is the
+                        # same "fresh run" outcome as an unknown explicit id.
+                        create_kwargs = {}
+
         run = AutomationRun.objects.create(
                 automation = automation,
                 status = RunStatus.RUNNING,
@@ -170,6 +191,7 @@ def start_or_resume_run(automation,data,*,run_id = None,mode = 'live',replay_of_
                 trigger_payload = dict(data) if isinstance(data,Mapping) else {},
                 replay_of = replay_source(automation,replay_of_id),
                 started_at = timezone.now(),
+                **create_kwargs
         )
 
         return run,{}
