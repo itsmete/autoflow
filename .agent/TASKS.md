@@ -3,8 +3,8 @@
 Format: `- [ ] T-XXX short title (owner: worker/reviewer/human) - notes`
 
 ## Todo (Faz 2 — Dayanıklılık ve Gözlemlenebilirlik)
-- [ ] T-206 Adversarial review of Faz 2.A-C commits `9307529` and `b1f126f` (owner: reviewer) - Check durable execution/resume, migration safety, dry-run side effects, replay and tenant/RBAC isolation before T-204
-- [ ] T-204 Faz 2.D: Webhook idempotency (`WebhookDelivery`) & exponential backoff retry (owner: worker) - `Idempotency-Key` / payload hash dedup + Celery backoff/jitter + `failed_permanently` (`ROADMAP.md` §4.7, T4, T5)
+- [ ] T-204 Faz 2.D.1: Webhook idempotency (`WebhookDelivery`) (owner: worker) - `Idempotency-Key` / payload hash dedup + DB uniqueness + TTL; scope/conflict/TTL semantics pending human decision (`ROADMAP.md` §4.7, T5)
+- [ ] T-208 Faz 2.D.2: Queue-level exponential backoff retry (owner: worker) - Resume the SAME run with Celery countdown/jitter; exhaustion -> `failed_permanently`; keep action-level immediate retry separate (`ROADMAP.md` §4.7, T4)
 - [ ] T-205 Faz 2.E: `wait_for_event` step & queue isolation (`default` / `bulk`) (owner: worker) - Suspend run until matching event/timeout + queue routing (`ROADMAP.md` §4.4, §4.7, T8)
 
 ## Doing
@@ -13,6 +13,8 @@ Format: `- [ ] T-XXX short title (owner: worker/reviewer/human) - notes`
 - [ ] T-090 Real Redis test run `./run_tests.sh --redis` (owner: human) - Requires Docker daemon permission on host
 
 ## Done
+- [x] T-207 Fix T-206 durable-run and mode/replay findings (`0d1ea6d`) - 704 tests OK; final reviewer APPROVE; migration `0013`, makemigrations check clean
+- [x] T-206 Adversarial review of Faz 2.A-C (`9307529`, `b1f126f`) - CHANGES REQUESTED: legacy resume can duplicate/skip work, StepRun lacks uniqueness, `_mode` is spoofable, active runs are replayable; follow-up T-207
 - [x] T-201 Faz 2.A: `AutomationRun` & `AutomationStepRun` models + step memoization (`9307529`; full suite 684 OK; T-206 review pending)
 - [x] T-202 Faz 2.B: Paginated Run/StepRun history API & unembedded `logs` (`b1f126f`; full suite 684 OK; T-206 review pending)
 - [x] T-203 Faz 2.C: Dry-run (`RunMode.TEST`) & Replay (`replay_of`) (`b1f126f`; full suite 684 OK; T-206 review pending)

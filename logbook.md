@@ -1667,3 +1667,48 @@ taşınmalı.
 
 Antigravity'nin kendi analiz raporu: `caching_report.md` (kısmen bayat — işaret ettiği
 iki sorun f56ba21'de düzeltilmiş, bkz. yukarıda §6).
+
+---
+
+## 2026-11-05 — Faz 2.A–C incelemesi ve dayanıklılık düzeltmeleri (T-206/T-207)
+
+**Ne ve neden:** `9307529` (Run/StepRun + memoizasyon) ve `b1f126f` (geçmiş API'si,
+dry-run, replay) commit'leri STATUS/TASKS'e henüz işlenmemişti. Devralmada git esas
+alındı, tam suite çalıştırıldı ve iki ayrı adversarial review yapıldı. Testlerin yeşil
+olmasına rağmen review, memoizasyonun amacını bozan ve dry-run güvenliğini aşan
+yollar buldu; bu yüzden T-204'ten önce T-207 açıldı.
+
+**Kök nedenler:**
+- Legacy executor adım anahtarını `action.order`'dan, grafik köprüsü ise listedeki
+  konumdan (`1..n`) üretiyordu. `order=(5,10)` olunca resume başarılı adımı tanımadı
+  ve provider çağrısını tekrarladı. `completed_steps` varken grafik hiç yoksa boş
+  grafik `success` dönüyor, kalan action'lar hiç çalışmıyordu.
+- `AutomationStepRun(run, step_key)` üzerinde DB tekil kısıtı yoktu; eşzamanlı
+  `update_or_create` çift satır ve sonrasında `MultipleObjectsReturned` üretebilirdi.
+- Run modu `_mode` anahtarıyla context içinde taşınıyor; trigger payload'ı, action
+  config'i veya `set_variable` bu anahtarı ezebiliyordu. Sonuç yalnızca LIVE run'ın
+  sessizce simulate olması değil, TEST run'ın gerçek provider çağrısı yapmasıydı.
+- Resume'de kalıcı `trigger_payload` ve `run.mode` yerine çağıranın yeni verisi ve
+  Celery'nin varsayılan `live` modu kullanılabiliyordu.
+- Replay için terminal-durum kontrolü yoktu; queued/running/waiting run'ı replay
+  etmek aynı işi ikinci kez başlatabilirdi. Genel `except Exception` yalnızca logladığı
+  için beklenmeyen hata run'ı sonsuza dek `running` bırakıyordu.
+
+**Nasıl düzeltildi (`0d1ea6d`):** Legacy ve grafik anahtarları `(order, created_at)`
+sırasındaki konuma sabitlendi; stepsiz legacy resume kendi memoizasyonunu uyguluyor.
+Migration `0013` ile `(run, step_key)` tekil kısıtı eklendi. `_mode` artık yalnızca
+executor'un otoritesi; config/trigger/variable enjeksiyonunun iki yönü de provider
+çağrı sayısıyla test edildi. Açık crash recovery kalıcı payload ve modu kullanıyor,
+wait continuation mevcut context'i koruyor. Replay yalnızca terminal run'lara açık;
+beklenmeyen hata run'ı normal failure yoluyla kapatıyor. Gerçek crash durumunu modellemek
+için RUNNING kalan adımın aynı pk ile SUCCESS'e döndüğü regresyon testi eklendi.
+
+**Doğrulama:** Son reviewer **APPROVE**; `./run_tests.sh` **704 test OK** (~118s),
+`makemigrations --check` temiz. Worker ilk turda adım bütçesi bitince commit atamadı;
+aynı worker yalnızca kendi T-207 görevine devam ettirilerek iki test açığı kapatıldı
+ve yalnızca kaynak/test/migration dosyaları açık path'lerle commit'lendi.
+
+**Bilerek bırakılanlar / riskler:** TEST→LIVE replay modu değişikliği mevcut API
+sözleşmesi olarak korundu; manual-trigger gate'i ayrı bir ürün kararı. Adım grafiğinin
+crash ile resume arasında silinmesi eski grafik anahtarlarını legacy konum anahtarlarıyla
+eşleştiremeyebilir. Gerçek Redis koşusu hâlâ T-090'daki Docker iznine bağlı.
