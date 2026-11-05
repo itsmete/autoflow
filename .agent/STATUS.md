@@ -3,9 +3,9 @@
 _Last updated: 2026-11-05_
 
 ## Snapshot
-- Branch: `develop`; latest application commit: `dd33036` (`feat(automations): add persistent webhook delivery idempotency`). Later `docs(agent)` commits may follow; use git for the exact HEAD.
+- Branch: `develop`; latest application commit: `893d6d6` (`feat(automations): retry failed live runs on the same run`). Later `docs(agent)` commits may follow; use git for the exact HEAD.
 - `develop` is ahead of `origin/develop`; `master` remains pre-merge at `8052eaf`.
-- Full suite verified after T-204: **724 tests OK, 0 failures** (`./run_tests.sh`, 2026-11-05, ~116s); `makemigrations --check` is clean.
+- Full suite verified after T-208: **751 tests OK, 0 failures** (`./run_tests.sh`, 2026-11-05, ~115s); `makemigrations --check` is clean.
 
 ## Done
 - **Faz 0** (`0f296e7`): scheduling fixes + webhook HMAC/replay/throttle.
@@ -15,6 +15,7 @@ _Last updated: 2026-11-05_
 - **T-206:** two adversarial reviews of Faz 2.A-C; CHANGES REQUESTED, all blocking findings addressed.
 - **T-207** (`0d1ea6d`): legacy/graph resume key alignment, steps-less resume, StepRun uniqueness migration `0013`, executor-owned run mode, persisted resume payload/mode, terminal-only replay, stale-step recovery and unexpected-error closure; final reviewer APPROVE.
 - **T-204** (`dd33036`): trigger-scoped WebhookDelivery idempotency, raw-body SHA-256 fallback, 202/200/409 contract, migration `0014`, immediate expired reclaim, 24h TTL and hourly cleanup; final reviewer APPROVE.
+- **T-208** (`893d6d6`): same-run queue retry with pre-minted/scoped identity, memoization, exponential backoff/jitter/cap, QUEUED/RUNNING/FAILED_PERMANENTLY lifecycle, final-only failure fan-out, wait-continuation handling and once-only scheduled budget; cross-tenant and explicit-id review blockers fixed; final reviewer APPROVE.
 
 ## Uncommitted work (pre-existing at takeover)
 - **Finished, awaiting review/commit:** `.opencode/agents/orchestrator.md`, `.opencode/agents/reviewer.md`, `.opencode/agents/worker.md` — role/model/permission/workflow updates.
@@ -24,15 +25,16 @@ _Last updated: 2026-11-05_
 - No uncommitted application source, tests or migrations.
 
 ## Task in flight
-- **T-208:** finish the interrupted queue-level retry design and implementation: SAME run id, exponential backoff/jitter, memoized resume, terminal `failed_permanently`, and no transient-failure fan-out. T-205 will NOT be started in this session; package after T-208.
+- None. T-204 and the interrupted T-208 are implemented, reviewed, tested and committed. T-205 was not started; this session is packaged after the log commit.
 
 ## Known problems / risks
 - **T-204 delivery/dispatch crash window:** idempotent DB claiming must precede Celery dispatch to prevent duplicates; a process crash between those operations can still lose one delivery without an outbox. Delay exceptions should release a newly claimed row; full transactional-outbox recovery is out of scope.
+- **T-208 delivery/recovery windows:** crash between failure recording and retry dispatch (including QUEUED-before-apply_async) can strand a run; duplicate Celery delivery can double-dispatch/reset the in-message retry budget. Beat can overshoot `n` during backoff because budget is spent on final return. Physical dead-letter queue is not configured; terminal `failed_permanently` is implemented.
 - **Channel credentials in cached Automation read payload (Faz 3):** `ChannelReadSerializer` exposes `credentials`; masking/encryption remains planned.
 - **Real Redis run (`./run_tests.sh --redis`):** blocked on host Docker permission (`T-090`).
 - `STATUS.md` and `TASKS.md` were stale at takeover: they omitted the two Faz 2 commits, still listed T-201..T-203 as Todo, reported 636 tests and 38 commits ahead. Git and the fresh test run are the source of truth above.
 
 ## Next 3 steps
-1. **T-208 / Faz 2.D.2:** finish and review queue-level retry on the SAME run; no new task beyond the interrupted work.
-2. **Package:** final full-suite verification, logbook/STATUS/TASKS update and log commit; no push.
-3. **Later, not this session:** T-205 (`wait_for_event` + queue isolation) remains Todo.
+1. **Next session:** start T-205 (`wait_for_event` + `default`/`bulk` queue isolation) with a fresh worker and the T-204/T-208 delivery/retry contracts as constraints.
+2. **Operational verification:** real broker/backoff behavior and `./run_tests.sh --redis` remain unverified; real Redis is blocked on T-090 Docker permission.
+3. **Housekeeping decision:** pre-existing `.opencode` harness edits and the half-done `AGENTS.md` cleanup remain uncommitted and were not changed by this session's application work.

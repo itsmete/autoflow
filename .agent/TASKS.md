@@ -6,12 +6,12 @@ Format: `- [ ] T-XXX short title (owner: worker/reviewer/human) - notes`
 - [ ] T-205 Faz 2.E: `wait_for_event` step & queue isolation (`default` / `bulk`) (owner: worker) - Suspend run until matching event/timeout + queue routing (`ROADMAP.md` §4.4, §4.7, T8)
 
 ## Doing
-- [ ] T-208 Faz 2.D.2: Queue-level exponential backoff retry (owner: worker) - Resume the SAME run with Celery countdown/jitter; exhaustion -> `failed_permanently`; suppress transient-failure fan-out; keep action-level immediate retry separate (`ROADMAP.md` §4.7, T4)
 
 ## Blocked
 - [ ] T-090 Real Redis test run `./run_tests.sh --redis` (owner: human) - Requires Docker daemon permission on host
 
 ## Done
+- [x] T-208 Faz 2.D.2: Queue-level exponential backoff retry (`893d6d6`) - SAME run + memoization, scoped identity, jitter/cap, terminal `failed_permanently`, final-only failure fan-out; 751 tests OK; reviewer APPROVE
 - [x] T-204 Faz 2.D.1: Webhook idempotency (`dd33036`) - 724 tests OK; reviewer APPROVE; migration `0014`, 24h TTL + hourly cleanup
 - [x] T-207 Fix T-206 durable-run and mode/replay findings (`0d1ea6d`) - 704 tests OK; final reviewer APPROVE; migration `0013`, makemigrations check clean
 - [x] T-206 Adversarial review of Faz 2.A-C (`9307529`, `b1f126f`) - CHANGES REQUESTED: legacy resume can duplicate/skip work, StepRun lacks uniqueness, `_mode` is spoofable, active runs are replayable; follow-up T-207

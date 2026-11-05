@@ -1745,3 +1745,50 @@ istek kısa süreliğine 200 görmüş olabilir. Bunların gerçek çözümü tr
 delivery state; kapsam dışı. Release'in kendisi DB hatası verirse broker istisnasını
 maskeleyebilir ve nadir claim-release yarışında transient 500 mümkün. Gerçek Postgres
 concurrency testi, deployment beat gözlemi ve gerçek Redis koşusu yapılmadı.
+
+---
+
+## 2026-11-05 — Aynı Run üzerinde kuyruk retry'ı (T-208)
+
+**Ne ve neden:** Action içindeki senkron retry döngüsü backoff'suzdu ve worker/Celery
+seviyesinde geçici provider hatası run'ı hemen bitiriyordu. T-208, LIVE ve aktif bir
+otomasyonun FAILED run'ını exponential backoff + jitter ile yeniden kuyruğa atmak,
+bunu yaparken başarılı adımları tekrar çalıştırmamak için **aynı AutomationRun** üzerinde
+kalmak üzere tamamlandı. T-205 bilinçli olarak başlatılmadı.
+
+**Tasarım:** `run_automation` artık ilk çağrıda UUID'yi önceden üretip `new_run_id`
+olarak runtime'a veriyor; `.latest()` ile yarışan bir lookup yok. Retry, bound
+`self.retry()` yerine açık `apply_async` ve iç `retry_attempt` taşıyor. Varsayılanlar
+3 re-dispatch, 30s taban, 3600s tavan, ±0.25 jitter; countdown son kez `[0,max]` aralığına
+kırpılıyor. Geçişler FAILED→QUEUED→RUNNING, bütçe bitince FAILED_PERMANENTLY. QUEUED
+yazımı dispatch'ten önce; terminal update'ler stale whole-row save yerine hedefli ve
+automation kapsamlı. Wait continuation retry'ı `start_step_key` ve tam context'i korur,
+yeni continuation bütçeye sıfırdan başlar. Scheduled run bütçesi ara denemelerde değil,
+yalnızca final dönüşte bir kez harcanır. Action-level immediate retry'a dokunulmadı.
+
+**Fan-out ve bulunan kök nedenler:** Geçici failure'ın `automation_completed` zinciri
+başlatmaması için `notify_failure` orchestrator'a işlendi; yalnızca final failure bir kez
+yayınlanıyor. Bu değişiklik, legacy `execute_actions=False` yolunun log/fan-out üretmeden
+yalnızca `finish_run` çağırdığını ortaya çıkardı; yol `_record`'a alındı, yoksa final failure
+tamamen sessiz kalacaktı. Review ayrıca iki blocker yakaladı: `_attempt_run` UUID'yi
+automation kapsamı olmadan okuyup başka tenant'ın run'ını requeue/permanent yapabiliyor ve
+context'ini yanlış automation'a sızdırabiliyordu; unknown/malformed explicit id ile yaratılan
+taze run ise task tarafından bulunamadığı için retry/final fan-out kayboluyordu. Düzeltmede
+tüm lookup/update/fan-out yolları automation kapsamına alındı ve task her çağrıda yedek
+`new_run_id` üretir hale getirildi; scoped miss'te taze satır bu id ile açılıyor. Caller'ın
+`mode` argümanı retry kararından çıkarıldı, kalıcı `run.mode` tek otorite kaldı.
+
+**Doğrulama (`893d6d6`):** 27 retry testi; cross-automation ve missing-automation negatif
+testleri A satırının değişmediğini kanıtlıyor. Unknown/malformed id failure-chain testleri
+tek run, 3 re-dispatch, FAILED_PERMANENTLY ve tek failure fan-out doğruluyor. Memoized
+provider çağrı sayıları, backoff/jitter/cap, scheduled bütçe, wait continuation ve dry-run
+kapsamı testli. Son reviewer **APPROVE**; tam suite **751 test OK** (~115s),
+`makemigrations --check` temiz.
+
+**Bilerek bırakılanlar / riskler:** `_record` ile retry scheduling arasında veya QUEUED
+ile `apply_async` arasında process crash run'ı ve final bildirimi kaybettirebilir; outbox/
+recovery scheduler yok. At-least-once duplicate delivery retry'ı çift dispatch edebilir ve
+redelivered `retry_attempt=0` bütçeyi resetleyebilir; retry task'in kendi idempotency'si yok.
+Backoff sürerken beat yeni run'lar başlatıp `n` bütçesini geçici olarak aşabilir, çünkü sayaç
+final dönüşte harcanıyor. ROADMAP'taki fiziksel dead-letter kuyruğu değil, terminal DB durumu
+`failed_permanently` uygulandı. Broker/Postgres concurrency ve gerçek Redis koşusu yok.
